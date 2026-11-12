@@ -392,6 +392,9 @@ static void testStress()
     juce::AudioBuffer<float> buf (2, 1024);
     eng::Transport tr { true, 0.0, 120.0 };
     bool finite = true;
+    // salidas como las pide un DAW con 3 activas (6 canales) en un buffer de 2: las de afuera tienen que ir a los primeros
+    for (int i = 0; i < eng::DrumEngine::kNumOutputs; ++i)
+        e.outputChannel[(size_t) i] = i < 3 ? i * 2 : -1;
 
     for (int b = 0; b < 30000; ++b)
     {
@@ -415,6 +418,17 @@ static void testStress()
             s.ramp = rng.nextBool();
             s.rampBeats = (float) (1 << rng.nextInt (3));
             s.pitchVar = rng.nextFloat() * 24.0f - 12.0f;
+            s.gainDb = rng.nextFloat() * 54.0f - 48.0f;
+            s.pan = rng.nextFloat() * 2.0f - 1.0f;
+            s.pitch = rng.nextFloat() * 48.0f - 24.0f;
+            s.decay = 0.05f + rng.nextFloat() * 0.95f;
+            s.reverse = rng.nextBool();
+            s.mute = rng.nextInt (6) == 0;
+            s.mono = rng.nextBool();
+            s.choke = rng.nextInt (9);
+            s.output = rng.nextInt (eng::DrumEngine::kNumOutputs);
+            e.globals.maxVoices = 1 + rng.nextInt (eng::DrumEngine::kMaxVoices);
+            e.globals.velSens = rng.nextFloat();
             e.globals.swing = 0.5f + rng.nextFloat() * 0.25f;
             e.globals.humanize = rng.nextFloat();
             e.globals.pressure = rng.nextBool();
@@ -446,6 +460,165 @@ static void testStress()
     CHECK (finite, "aparecio un valor no numerico en la salida");
 }
 
+/** Toca un golpe en un motor ya preparado y devuelve el bloque (canales: 2 o mas). */
+static juce::AudioBuffer<float> hit (eng::DrumEngine& e, std::initializer_list<std::pair<int, juce::MidiMessage>> events,
+                                     int channels = 2, int length = 4096)
+{
+    juce::AudioBuffer<float> buf (channels, length);
+    juce::MidiBuffer midi;
+    for (auto& [t, m] : events)
+        midi.addEvent (m, t);
+    e.process (buf, midi, {});
+    return buf;
+}
+
+static eng::SamplePtr makeRamp (int length)
+{
+    auto s = std::make_shared<eng::Sample>();
+    s->sampleRate = kRate;
+    s->buffer.setSize (1, length);
+    for (int i = 0; i < length; ++i)
+        s->buffer.setSample (0, i, (float) (i + 1) / (float) length);
+    return s;
+}
+
+static int lastSound (const juce::AudioBuffer<float>& b, int ch = 0)
+{
+    int last = -1;
+    for (int i = 0; i < b.getNumSamples(); ++i)
+        if (std::abs (b.getSample (ch, i)) > 1.0e-5f)
+            last = i;
+    return last;
+}
+
+static void testPadSound()
+{
+    std::printf ("Sonido por pad: VOL, PAN, PITCH, DECAY, REVERSE y MUTE\n");
+    const auto on = juce::MidiMessage::noteOn (1, kNote, 1.0f);
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (1000));
+        e.pads[0].gainDb = -6.0f;
+        const auto b = hit (e, { { 0, on } });
+        CHECK (std::abs (b.getSample (0, 10) - 0.501f) < 0.01f, "VOL -6 dB: %f", b.getSample (0, 10));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (1000));
+        e.pads[0].pan = -1.0f;
+        const auto b = hit (e, { { 0, on } });
+        CHECK (std::abs (b.getSample (0, 10) - 1.0f) < 0.01f && std::abs (b.getSample (1, 10)) < 1.0e-4f,
+               "PAN a la izquierda: L %f R %f", b.getSample (0, 10), b.getSample (1, 10));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (1000));
+        e.pads[0].pitch = 12.0f;
+        const auto b = hit (e, { { 0, on } });
+        CHECK (std::abs (lastSound (b) - 500) <= 2, "PITCH +12: dura %d, se esperaba ~500", lastSound (b));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (1000));
+        e.pads[0].decay = 0.5f;
+        const auto b = hit (e, { { 0, on } });
+        CHECK (std::abs (lastSound (b) - 500) <= 2, "DECAY 50 %%: dura %d, se esperaba ~500", lastSound (b));
+        CHECK (b.getSample (0, 300) > 0.99f && b.getSample (0, 450) < 0.5f, "DECAY: entero hasta el fundido y despues baja");
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeRamp (1000));
+        e.pads[0].reverse = true;
+        const auto b = hit (e, { { 0, on } });
+        CHECK (b.getSample (0, 0) > 0.99f && b.getSample (0, 998) < 0.01f, "REVERSE: empieza por el final (%f, %f)",
+               b.getSample (0, 0), b.getSample (0, 998));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (1000));
+        e.pads[0].mute = true;
+        const auto b = hit (e, { { 0, on } });
+        CHECK (lastSound (b) < 0, "MUTE: no tiene que sonar");
+        CHECK (e.padFlash[0].load() > 0, "MUTE: la luz del pad igual se enciende");
+    }
+}
+
+static void testMonoChokeVoices()
+{
+    std::printf ("MONO, CHOKE, VOCES y VEL\n");
+    const auto on0 = juce::MidiMessage::noteOn (1, kNote, 1.0f);
+    const auto on1 = juce::MidiMessage::noteOn (1, kNote + 1, 1.0f);
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (3000));
+        const auto poly = hit (e, { { 0, on0 }, { 1000, on0 } });
+        CHECK (std::abs (poly.getSample (0, 1500) - 2.0f) < 0.01f, "POLY: los dos golpes se suman (%f)", poly.getSample (0, 1500));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (3000));
+        e.pads[0].mono = true;
+        const auto b = hit (e, { { 0, on0 }, { 1000, on0 } });
+        CHECK (std::abs (b.getSample (0, 1500) - 1.0f) < 0.01f, "MONO: el golpe nuevo corta el anterior (%f)", b.getSample (0, 1500));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (3000)); e.setSample (1, makeClick (3000));
+        e.pads[0].choke = 3; e.pads[1].choke = 3;
+        const auto b = hit (e, { { 0, on0 }, { 1000, on1 } });
+        CHECK (std::abs (b.getSample (0, 1500) - 1.0f) < 0.01f, "CHOKE mismo grupo: el pad 2 corta al 1 (%f)", b.getSample (0, 1500));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (3000)); e.setSample (1, makeClick (3000));
+        e.pads[0].choke = 3; e.pads[1].choke = 4;
+        const auto b = hit (e, { { 0, on0 }, { 1000, on1 } });
+        CHECK (std::abs (b.getSample (0, 1500) - 2.0f) < 0.01f, "CHOKE otro grupo: no se cortan (%f)", b.getSample (0, 1500));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (3000));
+        e.globals.maxVoices = 1;
+        const auto b = hit (e, { { 0, on0 }, { 1000, on0 } });
+        CHECK (std::abs (b.getSample (0, 1500) - 1.0f) < 0.01f, "VOCES 1: suena un golpe a la vez (%f)", b.getSample (0, 1500));
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (3000));
+        e.globals.velSens = 0.0f;
+        const auto b = hit (e, { { 0, juce::MidiMessage::noteOn (1, kNote, 0.3f) } });
+        CHECK (std::abs (b.getSample (0, 10) - 1.0f) < 0.01f, "VEL 0 %%: siempre a tope (%f)", b.getSample (0, 10));
+    }
+}
+
+static void testMidiFiltersAndLearn()
+{
+    std::printf ("Canal MIDI, rango MIDI y MIDI Learn\n");
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (1000));
+        e.globals.midiChannel = 2;
+        CHECK (lastSound (hit (e, { { 0, juce::MidiMessage::noteOn (1, kNote, 1.0f) } })) < 0, "canal 2: una nota del canal 1 no suena");
+        CHECK (lastSound (hit (e, { { 0, juce::MidiMessage::noteOn (2, kNote, 1.0f) } })) >= 0, "canal 2: una nota del canal 2 suena");
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (1000));
+        e.globals.rangeLo = 61;
+        CHECK (lastSound (hit (e, { { 0, juce::MidiMessage::noteOn (1, kNote, 1.0f) } })) < 0, "rango desde 61: la nota 60 no suena");
+    }
+    {
+        eng::DrumEngine e; e.prepare (kRate); e.setSample (5, makeClick (1000));
+        e.learnPad.store (5);
+        const auto b = hit (e, { { 0, juce::MidiMessage::noteOn (1, 40, 1.0f) } });
+        CHECK (e.padNote[5].load() == 40, "LEARN: el pad 6 tendria que quedar en la nota 40 (%d)", e.padNote[5].load());
+        CHECK (e.lastLearnedPad.load() == 5 && e.learnPad.load() == -1, "LEARN: termina despues de una nota");
+        CHECK (lastSound (b) >= 0, "LEARN: la nota aprendida tambien suena");
+    }
+}
+
+static void testOutputs()
+{
+    std::printf ("Multi-out: cada pad sale por su salida; si el DAW la apaga, va a Main\n");
+    eng::DrumEngine e; e.prepare (kRate); e.setSample (0, makeClick (1000));
+    e.pads[0].output = 3;
+    for (int i = 0; i < eng::DrumEngine::kNumOutputs; ++i)
+        e.outputChannel[(size_t) i] = i < 4 ? i * 2 : -1;   // 4 salidas activas: 8 canales
+    auto b = hit (e, { { 0, juce::MidiMessage::noteOn (1, kNote, 1.0f) } }, 8);
+    CHECK (lastSound (b, 6) >= 0 && lastSound (b, 7) >= 0, "la salida 4 (canales 7 y 8) tiene que sonar");
+    CHECK (lastSound (b, 0) < 0, "Main no tiene que sonar");
+
+    e.pads[0].output = 9;   // salida apagada
+    b = hit (e, { { 0, juce::MidiMessage::noteOn (1, kNote, 1.0f) } }, 8);
+    CHECK (lastSound (b, 0) >= 0 && lastSound (b, 6) < 0, "una salida apagada va a Main");
+}
+
 int main()
 {
     testSampleAccurate();
@@ -464,6 +637,10 @@ int main()
     testDefaultIsOneShot();
     testGridHitAtBlockEnd();
     testStress();
+    testPadSound();
+    testMonoChokeVoices();
+    testMidiFiltersAndLearn();
+    testOutputs();
     std::printf (failures == 0 ? "OK: todo paso\n" : "%d falla(s)\n", failures);
     return failures == 0 ? 0 : 1;
 }

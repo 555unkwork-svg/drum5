@@ -3,7 +3,7 @@
 Bateria de 16 pads con retrigger al estilo del Note Repeat de la MPC2000XL. Plugin VST3 para Windows y Linux.
 Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 
-## Que hace (v0.2.1, etapa 2)
+## Que hace (v0.3, etapa 3)
 
 ### Pads
 - 16 pads, cada uno con su sample. Se carga con **CARGAR** (en el pad elegido), con clic derecho sobre el pad,
@@ -13,6 +13,19 @@ Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 - Se tocan por MIDI desde C5 de FL Studio (nota 60) en adelante, o con el mouse (mas arriba suena mas fuerte).
 - Disposicion de MPC: el pad 1 abajo a la izquierda, el 16 arriba a la derecha.
 - El proyecto del DAW guarda la ruta de cada sample. Si un archivo se movio, el pad dice **NO ENCONTRADO**.
+
+### Sonido de cada pad (columna del medio)
+- Forma de onda del sample (clic para escucharlo). Lo que corta el DECAY se ve apagado.
+- **VOL**, **PAN**, **PITCH** (+-24 semitonos) y **DECAY** (100 % = suena entero; menos, se apaga antes con un fundido).
+- **REVERSE**, **MUTE** y **MONO** (un golpe nuevo corta el anterior del mismo pad).
+- **CHOKE**: grupos 1 a 8; los pads del mismo grupo se cortan entre si (hi-hat cerrado y abierto).
+- **SALIDA**: Main o Salida 2 a 16. En FL se conectan al mixer desde las entradas y salidas del plugin.
+  Si el DAW no activa una salida, ese pad suena por Main.
+- **NOTA** y **LEARN**: tocar LEARN y despues una nota del controlador la asigna al pad.
+
+### MIDI
+- **CANAL**: todos o uno solo (1 a 16).
+- **RANGO**: las notas fuera del rango se ignoran.
 
 ### Roll (como el Note Repeat de la MPC2000XL), ajustes por pad
 - **RETRIGGER** (viene apagado): mantener el pad repite el golpe. El primero suena al instante; los siguientes caen en la grilla
@@ -32,13 +45,15 @@ Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 - **HUMANIZE**: pequenas variaciones de fuerza y de tiempo (siempre un poco tarde, hasta 8 ms) en las repeticiones.
 - **PRESION**: apagado, todas las repeticiones suenan con la fuerza del primer golpe. Encendido, la presion del pad
   (aftertouch de canal o polifonico) manda la fuerza de las repeticiones, como en la MPC.
+- **VEL**: cuanto sigue cada golpe a la velocity (0 % = siempre a tope).
+- **VOCES**: cuantos golpes suenan a la vez (1 a 64); al pasarse se corta el mas viejo.
 - **MASTER**: volumen general.
 
 ## Plan
 
 1. Base: 16 pads que suenan, compilacion automatica. (hecho)
-2. Motor de retrigger. (esta version)
-3. Sampler completo por pad, choke, MIDI Learn, rango y canal MIDI, multi-out.
+2. Motor de retrigger. (hecho)
+3. Sampler completo por pad, choke, MIDI Learn, rango y canal MIDI, multi-out. (esta version)
 4. Browser de samples con deteccion de tipo por nombre y carpeta, categorias propias y exportar kit (carpeta o zip).
 5. Presets y pulido visual.
 

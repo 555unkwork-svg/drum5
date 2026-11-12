@@ -12,6 +12,7 @@ constexpr float kGateFadeMs = 2.0f;
 constexpr float kHumanizeMaxMs = 8.0f;
 constexpr float kHumanizeMaxVel = 0.15f;
 constexpr double kPitchVarBeats = 4.0;  // Pitch Var llega a su valor en un compas
+constexpr double kDecayFadeShare = 0.25; // DECAY: el fundido ocupa el ultimo cuarto de lo que suena
 
 inline float readSample (const float* data, int length, int index) noexcept
 {
@@ -64,6 +65,7 @@ bool rateSwings (Rate r) { return r == Rate::r8 || r == Rate::r16; }
 
 DrumEngine::DrumEngine()
 {
+    outputChannel.fill (-1);
     for (int i = 0; i < kNumPads; ++i)
     {
         padNote[(size_t) i].store (kDefaultFirstNote + i);
@@ -224,28 +226,60 @@ void DrumEngine::fireHit (int pad, int time, bool first)
     scheduleNext (pad, hitBeat, hitSample);
 
     const auto& src = current[(size_t) pad];
-    if (src == nullptr || src->buffer.getNumSamples() == 0 || vel <= 0.0f)
+    if (src == nullptr || src->buffer.getNumSamples() == 0 || vel <= 0.0f || ps.mute)
         return;
 
-    // una voz libre; si no hay, se roba en ronda
-    int index = -1;
+    // MONO corta el golpe anterior del mismo pad; CHOKE corta a los otros pads del grupo (con un fundido corto)
+    for (auto& other : voices)
+        if (other.active && ((ps.mono && other.pad == pad)
+                             || (ps.choke > 0 && other.pad != pad && pads[(size_t) other.pad].choke == ps.choke)))
+            other.gateLeft = 0;
+
+    // VOCES: si ya suenan las permitidas (o no queda lugar), se corta la mas vieja
+    int index = -1, oldest = -1, active = 0;
     for (int i = 0; i < kMaxVoices; ++i)
-        if (! voices[(size_t) i].active) { index = i; break; }
-    if (index < 0)
     {
-        index = nextVoice;
-        nextVoice = (nextVoice + 1) % kMaxVoices;
+        const auto& x = voices[(size_t) i];
+        if (! x.active)
+        {
+            if (index < 0)
+                index = i;
+            continue;
+        }
+        ++active;
+        if (oldest < 0 || x.age < voices[(size_t) oldest].age)
+            oldest = i;
     }
+    if (index < 0 || active >= std::max (1, globals.maxVoices))
+        index = oldest;
+
+    // VEL: cuanto sigue la fuerza del golpe
+    const float level = (1.0f - globals.velSens) + globals.velSens * vel;
+    const float gain = level * juce::Decibels::decibelsToGain (ps.gainDb, -60.0f);
+    // paneo de balance: al centro los dos canales enteros; hacia un lado se baja el otro (nunca sube de 0 dB)
+    const float pan = juce::jlimit (-1.0f, 1.0f, ps.pan);
+
+    const int out = juce::jlimit (0, kNumOutputs - 1, ps.output);
+    const int left = outputChannel[(size_t) out] >= 0 ? outputChannel[(size_t) out] : std::max (0, outputChannel[0]);
 
     auto& v = voices[(size_t) index];
     v.active = true;
     v.pad = pad;
     v.src = src;   // copia del puntero: el hilo de audio no libera nada (el ultimo dueno es `retired`)
-    v.rate = src->sampleRate / hostRate * std::pow (2.0, semis / 12.0);
+    v.rate = src->sampleRate / hostRate * std::pow (2.0, (ps.pitch + semis) / 12.0);
     v.pos = -(double) delaySamples * v.rate;   // humanizar: arranca un poco despues (se leen ceros)
-    v.gain = vel;
+    v.gainL = gain * std::min (1.0f, 1.0f - pan);
+    v.gainR = gain * std::min (1.0f, 1.0f + pan);
+    v.outL = left;
+    v.outR = left + 1;
+    v.reverse = ps.reverse;
+    const double len = (double) src->buffer.getNumSamples();
+    const float decay = juce::jlimit (0.05f, 1.0f, ps.decay);
+    v.endPos = len * decay;
+    v.fadeLen = decay < 0.999f ? v.endPos * kDecayFadeShare : 0.0;
     v.gateLeft = gate;
     v.fade = 1.0f;
+    v.age = ++ageCounter;
 }
 
 void DrumEngine::noteOn (int pad, float velocity, int time)
@@ -345,26 +379,32 @@ void DrumEngine::render (juce::AudioBuffer<float>& out, int start, int num)
         const int srcChannels = buf.getNumChannels();
         const float* l = buf.getReadPointer (0);
         const float* r = buf.getReadPointer (srcChannels > 1 ? 1 : 0);
+        // si el DAW no da los canales de esa salida, va a los primeros
+        float* dl = out.getWritePointer (v.outL < outChannels ? v.outL : 0);
+        float* dr = out.getWritePointer (v.outR < outChannels ? v.outR : std::min (1, outChannels - 1));
 
         for (int i = 0; i < num; ++i)
         {
-            if (v.pos >= (double) len || v.fade <= 0.0f)
+            if (v.pos >= v.endPos || v.fade <= 0.0f)
             {
                 v.active = false;
                 v.src.reset();
                 break;
             }
+            float g = std::max (0.0f, v.fade);
             if (v.pos >= 0.0)
             {
                 if (v.gateLeft == 0)
                     v.fade -= fadeStep;
                 else if (v.gateLeft > 0)
                     --v.gateLeft;
+                if (v.fadeLen > 0.0)
+                    g *= (float) std::min (1.0, (v.endPos - v.pos) / v.fadeLen);
             }
-            const float g = v.gain * std::max (0.0f, v.fade);
-            out.addSample (0, start + i, hermite (l, len, v.pos) * g);
-            if (outChannels > 1)
-                out.addSample (1, start + i, hermite (r, len, v.pos) * g);
+            const double p = v.reverse ? (double) (len - 1) - v.pos : v.pos;
+            const bool silent = v.pos < 0.0;   // humanizar: todavia no arranco
+            dl[start + i] += silent ? 0.0f : hermite (l, len, p) * g * v.gainL;
+            dr[start + i] += silent ? 0.0f : hermite (r, len, p) * g * v.gainR;
             v.pos += v.rate;
         }
     }
@@ -433,9 +473,22 @@ void DrumEngine::process (juce::AudioBuffer<float>& out, const juce::MidiBuffer&
         if (! (on || off || chPressure || polyPressure))
             continue;
 
+        if (globals.midiChannel > 0 && msg.getChannel() != globals.midiChannel)
+            continue;
+
         const int time = juce::jlimit (0, numSamples, meta.samplePosition);
         runRolls (out, pos, time);
         pos = time;
+
+        // MIDI Learn: la proxima nota queda asignada al pad que espera (y suena)
+        if (on)
+            if (const int learn = learnPad.exchange (-1); learn >= 0 && learn < kNumPads)
+            {
+                padNote[(size_t) learn].store (msg.getNoteNumber());
+                lastLearnedPad.store (learn);
+            }
+        if (! chPressure && (msg.getNoteNumber() < globals.rangeLo || msg.getNoteNumber() > globals.rangeHi))
+            continue;
 
         if (chPressure)
         {

@@ -7,7 +7,7 @@ set(PLUGIN_MFR_CODE  "Mmrc")           # 4 caracteres, al menos una mayuscula
 set(PLUGIN_CODE      "Drm5")           # 4 caracteres, exactamente una mayuscula
 # -----------------------------------------------------------------------------
 
-project(Drum5 VERSION 0.2.1 LANGUAGES C CXX)
+project(Drum5 VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

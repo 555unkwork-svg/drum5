@@ -30,6 +30,18 @@ bool rateSwings (Rate);
 
 struct PadSettings
 {
+    // sonido
+    float gainDb = 0.0f;       // VOL
+    float pan = 0.0f;          // -1..1
+    float pitch = 0.0f;        // semitonos
+    float decay = 1.0f;        // 0.05..1: parte del sample que suena; lo que sobra se apaga con un fundido
+    bool reverse = false;
+    bool mute = false;
+    bool mono = false;         // un golpe nuevo corta el anterior del mismo pad
+    int choke = 0;             // 0 = sin grupo; 1..8: los pads del mismo grupo se cortan entre si
+    int output = 0;            // 0 = Main; 1..15 = Salida 2..16
+
+    // roll
     bool retrigger = false;
     Rate rate = Rate::r16;
     bool freeMode = false;     // LIBRE: golpes por segundo, sin grilla
@@ -48,6 +60,10 @@ struct GlobalSettings
     float swing = 0.5f;        // 0.5 = sin swing, hasta 0.75 (como la MPC)
     float humanize = 0.0f;     // 0..1: pequenas variaciones de tiempo (siempre tarde) y fuerza
     bool pressure = false;     // PRESION: la presion del pad (aftertouch) manda la fuerza de las repeticiones
+    float velSens = 1.0f;      // VEL: 0 = siempre a tope, 1 = sigue la velocity
+    int maxVoices = 32;        // VOCES: golpes sonando a la vez (los mas viejos se cortan)
+    int midiChannel = 0;       // 0 = todos
+    int rangeLo = 0, rangeHi = 127;   // notas fuera del rango se ignoran
 };
 
 /** Datos del host para el bloque actual. */
@@ -64,6 +80,7 @@ class DrumEngine
 {
 public:
     static constexpr int kMaxVoices = 64;
+    static constexpr int kNumOutputs = 16;   // Main + Salida 2..16
     static constexpr int kDefaultFirstNote = 60;   // C5 en FL Studio, igual que sampler5
 
     DrumEngine();
@@ -75,6 +92,8 @@ public:
     /** Se escriben desde el hilo de audio justo antes de process(). */
     std::array<PadSettings, kNumPads> pads;
     GlobalSettings globals;
+    /** Primer canal (el izquierdo) de cada salida en el buffer de process(); -1 = esa salida no esta activa y va a Main. */
+    std::array<int, kNumOutputs> outputChannel {};
 
     //---- hilo de mensajes ----
     void setSample (int pad, SamplePtr sample);
@@ -89,6 +108,8 @@ public:
     std::array<std::atomic<int>, kNumPads> padFlash;
     /** true mientras el pad tiene un roll andando (para la interfaz). */
     std::array<std::atomic<bool>, kNumPads> padRolling;
+    std::atomic<int> learnPad { -1 };          // MIDI Learn: pad esperando una nota, o -1
+    std::atomic<int> lastLearnedPad { -1 };    // lo lee la interfaz y lo vuelve a -1
 
 private:
     struct Voice
@@ -97,9 +118,14 @@ private:
         int pad = 0;
         SamplePtr src;
         double pos = 0.0, rate = 1.0;
-        float gain = 1.0f;
+        float gainL = 1.0f, gainR = 1.0f;
+        int outL = 0, outR = 1;      // canales del buffer
+        bool reverse = false;
+        double endPos = 0.0;         // DECAY: hasta donde suena (en muestras del sample)
+        double fadeLen = 0.0;        // largo del fundido final; 0 = sin fundido
         juce::int64 gateLeft = -1;   // muestras hasta cortar; -1 = sin corte
-        float fade = 1.0f;           // baja a 0 despues del gate
+        float fade = 1.0f;           // baja a 0 despues del gate, del choke o del mono
+        juce::uint32 age = 0;
     };
 
     struct Roll
@@ -127,7 +153,7 @@ private:
     double hostRate = 44100.0;
     std::array<Voice, kMaxVoices> voices;
     std::array<Roll, kNumPads> rolls;
-    int nextVoice = 0;
+    juce::uint32 ageCounter = 0;
     juce::Random random;
 
     // reloj en negras: el del proyecto si esta en play; si no, uno propio al tempo del proyecto

@@ -129,6 +129,32 @@ static void runTests (const juce::String& screenshot)
         CHECK (hits == 1, "por defecto (RETRIGGER apagado) tiene que sonar una vez, sono %d", hits);
     }
 
+    std::printf ("Multi-out: 16 salidas estereo y cada pad sale por la suya\n");
+    {
+        DrumProcessor p;
+        CHECK (p.getTotalNumOutputChannels() == 32, "se esperaban 32 canales (16 salidas), hay %d", p.getTotalNumOutputChannels());
+        p.prepareToPlay (44100.0, 512);
+        p.loadSample (0, kick);
+        if (auto* param = p.apvts.getParameter (DrumProcessor::padParamId (0, "out")))
+            param->setValueNotifyingHost (param->convertTo0to1 (2.0f));   // Salida 3
+        juce::AudioBuffer<float> out (32, 512);
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, 1.0f), 0);
+        p.processBlock (out, midi);
+        CHECK (out.getMagnitude (4, 0, 512) > 0.1f && out.getMagnitude (5, 0, 512) > 0.1f, "la Salida 3 (canales 5 y 6) no suena");
+        CHECK (out.getMagnitude (0, 0, 512) < 1.0e-5f, "Main no tendria que sonar");
+
+        // si el DAW apaga las salidas extra, todo va a Main
+        auto layout = p.getBusesLayout();
+        for (int i = 1; i < layout.outputBuses.size(); ++i)
+            layout.outputBuses.getReference (i) = juce::AudioChannelSet::disabled();
+        CHECK (p.setBusesLayout (layout), "tendria que aceptar las salidas extra apagadas");
+        p.prepareToPlay (44100.0, 512);
+        juce::AudioBuffer<float> stereo (2, 512);
+        p.processBlock (stereo, midi);
+        CHECK (stereo.getMagnitude (0, 0, 512) > 0.1f, "con las salidas apagadas tiene que sonar por Main");
+    }
+
     snare.moveFileTo (dir.getChildFile ("movido.wav"));   // simula un sample que se movio de lugar
     {
         DrumProcessor p;

@@ -4,14 +4,16 @@
 namespace
 {
 // orden de los parametros de cada pad (indices de PadParams::p)
-enum PadParam { pRetrigger = 0, pRate, pMode, pHz, pLatch, pGate, pAccent, pAccentGroup, pRamp, pRampBeats, pPitchVar, kNumPadParams };
-const char* const padParamNames[kNumPadParams] = { "rtg", "rate", "mode", "hz", "latch", "gate", "acc", "accgrp", "ramp", "rampbt", "pvar" };
+enum PadParam { pRetrigger = 0, pRate, pMode, pHz, pLatch, pGate, pAccent, pAccentGroup, pRamp, pRampBeats, pPitchVar,
+                pVol, pPan, pPitch, pDecay, pReverse, pMute, pMono, pChoke, pOutput, kNumPadParams };
+const char* const padParamNames[kNumPadParams] = { "rtg", "rate", "mode", "hz", "latch", "gate", "acc", "accgrp", "ramp", "rampbt", "pvar",
+                                                   "vol", "pan", "pitch", "decay", "rev", "mute", "mono", "choke", "out" };
 const int accentGroups[] = { 2, 3, 4 };
 const float rampBeatChoices[] = { 1.0f, 2.0f, 4.0f };
 }
 
 DrumProcessor::DrumProcessor()
-    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+    : AudioProcessor (makeBuses()),
       apvts (*this, nullptr, "PARAMS", createLayout())
 {
     formats.registerBasicFormats();   // WAV, AIFF, FLAC, OGG y MP3 (JUCE_USE_MP3AUDIOFORMAT)
@@ -19,6 +21,8 @@ DrumProcessor::DrumProcessor()
     for (int i = 0; i < eng::kNumPads; ++i)
         for (int k = 0; k < kNumPadParams; ++k)
             padParams[(size_t) i].p[k] = apvts.getRawParameterValue (padParamId (i, padParamNames[k]));
+    for (const char* id : { "vel", "voices", "chan", "rlo", "rhi" })
+        globalParams.push_back (apvts.getRawParameterValue (id));
     swingParam = apvts.getRawParameterValue ("swing");
     humanizeParam = apvts.getRawParameterValue ("hum");
     pressureParam = apvts.getRawParameterValue ("press");
@@ -31,6 +35,22 @@ DrumProcessor::~DrumProcessor()
     alive->store (false);
     stopTimer();
     loader.removeAllJobs (true, 10000);
+}
+
+juce::AudioProcessor::BusesProperties DrumProcessor::makeBuses()
+{
+    auto buses = BusesProperties().withOutput ("Main", juce::AudioChannelSet::stereo(), true);
+    for (int i = 2; i <= eng::DrumEngine::kNumOutputs; ++i)
+        buses = buses.withOutput ("Salida " + juce::String (i), juce::AudioChannelSet::stereo(), true);
+    return buses;
+}
+
+juce::StringArray DrumProcessor::outputNames()
+{
+    juce::StringArray names { "Main" };
+    for (int i = 2; i <= eng::DrumEngine::kNumOutputs; ++i)
+        names.add ("Salida " + juce::String (i));
+    return names;
 }
 
 juce::String DrumProcessor::padParamId (int pad, const char* name) { return "p" + juce::String (pad + 1) + "_" + name; }
@@ -52,6 +72,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout DrumProcessor::createLayout(
         const String n = "Pad " + String (i + 1) + " ";
         auto id = [i] (const char* name) { return ParameterID { padParamId (i, name), 1 }; };
         auto group = std::make_unique<AudioProcessorParameterGroup> ("pad" + String (i + 1), "Pad " + String (i + 1), " | ");
+        group->addChild (std::make_unique<AudioParameterFloat> (id ("vol"), n + "Vol", NormalisableRange<float> (-48.0f, 6.0f, 0.1f, 2.5f), 0.0f,
+                                                                AudioParameterFloatAttributes().withLabel ("dB")));
+        group->addChild (std::make_unique<AudioParameterFloat> (id ("pan"), n + "Pan", NormalisableRange<float> (-100.0f, 100.0f, 1.0f), 0.0f));
+        group->addChild (std::make_unique<AudioParameterFloat> (id ("pitch"), n + "Pitch", NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
+                                                                AudioParameterFloatAttributes().withLabel ("st")));
+        group->addChild (std::make_unique<AudioParameterFloat> (id ("decay"), n + "Decay", NormalisableRange<float> (5.0f, 100.0f, 1.0f), 100.0f, pct));
+        group->addChild (std::make_unique<AudioParameterBool> (id ("rev"), n + "Reverse", false));
+        group->addChild (std::make_unique<AudioParameterBool> (id ("mute"), n + "Mute", false));
+        group->addChild (std::make_unique<AudioParameterBool> (id ("mono"), n + "Mono", false));
+        group->addChild (std::make_unique<AudioParameterChoice> (id ("choke"), n + "Choke",
+                                                                 StringArray { "Off", "1", "2", "3", "4", "5", "6", "7", "8" }, 0));
+        group->addChild (std::make_unique<AudioParameterChoice> (id ("out"), n + "Salida", outputNames(), 0));
         group->addChild (std::make_unique<AudioParameterBool> (id ("rtg"), n + "Retrigger", false));
         group->addChild (std::make_unique<AudioParameterChoice> (id ("rate"), n + "Rate", rateNames(), 2));
         group->addChild (std::make_unique<AudioParameterChoice> (id ("mode"), n + "Modo", StringArray { "SYNC", "LIBRE" }, 0));
@@ -71,6 +103,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout DrumProcessor::createLayout(
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "swing", 1 }, "Swing", NormalisableRange<float> (50.0f, 75.0f, 1.0f), 50.0f, pct));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "hum", 1 }, "Humanize", NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f, pct));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { "press", 1 }, "Presion", false));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "vel", 1 }, "Vel", NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f, pct));
+    layout.add (std::make_unique<AudioParameterInt> (ParameterID { "voices", 1 }, "Voces", 1, eng::DrumEngine::kMaxVoices, 32));
+    StringArray channels { "Todos" };
+    for (int c = 1; c <= 16; ++c)
+        channels.add (String (c));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "chan", 1 }, "Canal MIDI", channels, 0));
+    layout.add (std::make_unique<AudioParameterInt> (ParameterID { "rlo", 1 }, "Rango MIDI desde", 0, 127, 0));
+    layout.add (std::make_unique<AudioParameterInt> (ParameterID { "rhi", 1 }, "Rango MIDI hasta", 0, 127, 127));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "master", 1 }, "Master", NormalisableRange<float> (-48.0f, 6.0f, 0.1f), 0.0f,
                                                        AudioParameterFloatAttributes().withLabel ("dB")));
     return layout;
@@ -78,7 +118,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout DrumProcessor::createLayout(
 
 bool DrumProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+        return false;
+    // las salidas 2..16: estereo o apagadas
+    for (int i = 1; i < layouts.outputBuses.size(); ++i)
+        if (! layouts.outputBuses[i].isDisabled() && layouts.outputBuses[i] != juce::AudioChannelSet::stereo())
+            return false;
+    return true;
 }
 
 void DrumProcessor::prepareToPlay (double sampleRate, int)
@@ -105,7 +151,22 @@ void DrumProcessor::readSettings()
         s.ramp = pp[pRamp]->load() > 0.5f;
         s.rampBeats = rampBeatChoices[juce::jlimit (0, 2, (int) pp[pRampBeats]->load())];
         s.pitchVar = pp[pPitchVar]->load();
+        s.gainDb = pp[pVol]->load();
+        s.pan = pp[pPan]->load() * 0.01f;
+        s.pitch = pp[pPitch]->load();
+        s.decay = pp[pDecay]->load() * 0.01f;
+        s.reverse = pp[pReverse]->load() > 0.5f;
+        s.mute = pp[pMute]->load() > 0.5f;
+        s.mono = pp[pMono]->load() > 0.5f;
+        s.choke = juce::jlimit (0, 8, (int) pp[pChoke]->load());
+        s.output = juce::jlimit (0, eng::DrumEngine::kNumOutputs - 1, (int) pp[pOutput]->load());
     }
+    auto& g = engine.globals;
+    g.velSens = globalParams[0]->load() * 0.01f;
+    g.maxVoices = (int) globalParams[1]->load();
+    g.midiChannel = (int) globalParams[2]->load();
+    g.rangeLo = (int) globalParams[3]->load();
+    g.rangeHi = (int) globalParams[4]->load();
     engine.globals.swing = swingParam->load() * 0.01f;
     engine.globals.humanize = humanizeParam->load() * 0.01f;
     engine.globals.pressure = pressureParam->load() > 0.5f;
@@ -129,6 +190,14 @@ void DrumProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             }
         }
     hostBpm.store (transport.bpm);
+
+    // donde empieza cada salida dentro del buffer (las apagadas por el DAW van a Main)
+    for (int i = 0; i < eng::DrumEngine::kNumOutputs; ++i)
+    {
+        const auto* bus = getBus (false, i);
+        engine.outputChannel[(size_t) i] = (bus != nullptr && bus->isEnabled() && bus->getNumberOfChannels() == 2)
+                                               ? getChannelIndexInProcessBlockBuffer (false, i, 0) : -1;
+    }
 
     engine.process (buffer, midi, transport);
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterParam->load(), -48.0f));

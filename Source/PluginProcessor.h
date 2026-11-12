@@ -65,6 +65,7 @@ public:
 
     static juce::String padParamId (int pad, const char* name);
     static const juce::StringArray& rateNames();
+    static juce::StringArray outputNames();
 
     juce::AudioFormatManager formats;
     juce::AudioProcessorValueTreeState apvts;
@@ -73,15 +74,17 @@ public:
 private:
     void timerCallback() override { engine.purgeRetired(); }
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    static BusesProperties makeBuses();
     eng::SamplePtr readSample (const juce::File& file);
     void applySample (int pad, const juce::File& file, eng::SamplePtr sample);
     void readSettings();
 
     struct PadParams
     {
-        std::atomic<float>* p[11] {};
+        std::atomic<float>* p[20] {};
     };
     std::array<PadParams, eng::kNumPads> padParams;
+    std::vector<std::atomic<float>*> globalParams;   // vel, voces, canal, rango desde, rango hasta
     std::atomic<float> *swingParam = nullptr, *humanizeParam = nullptr, *pressureParam = nullptr, *masterParam = nullptr;
 
     std::atomic<double> hostBpm { 120.0 };

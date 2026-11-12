@@ -46,7 +46,9 @@ void PadGrid::paint (juce::Graphics& g)
         g.drawText (noteName (proc.engine.padNote[(size_t) i].load()), lines.removeFromBottom (12.0f),
                     juce::Justification::centredLeft);
         g.setColour (missing && ! lit ? kRed : text.withAlpha (used ? 0.95f : 0.6f));
-        const auto name = loading ? juce::String ("CARGANDO...")
+        const bool learning = proc.engine.learnPad.load (std::memory_order_relaxed) == i;
+        const auto name = learning ? juce::String ("TOCA UNA NOTA")
+                        : loading ? juce::String ("CARGANDO...")
                         : missing ? juce::String ("NO ENCONTRADO")
                         : (used ? proc.getPadName (i).toUpperCase() : juce::String ("VACIO"));
         g.drawText (name, lines.removeFromBottom (13.0f), juce::Justification::centredLeft, true);
@@ -100,9 +102,82 @@ void PadGrid::mouseUp (const juce::MouseEvent&)
 
 
 //==============================================================================
+WaveformView::WaveformView (DrumProcessor& p) : proc (p) {}
+
+void WaveformView::setPad (int newPad)
+{
+    pad = newPad;
+    repaint();
+}
+
+void WaveformView::mouseDown (const juce::MouseEvent&)
+{
+    proc.engine.triggerPadFromUI (pad, true, 1.0f);
+    proc.engine.triggerPadFromUI (pad, false);
+}
+
+void WaveformView::paint (juce::Graphics& g)
+{
+    const auto bounds = getLocalBounds().toFloat();
+    g.setColour (kDisplay);
+    g.fillRoundedRectangle (bounds, 7.0f);
+
+    const auto area = getLocalBounds().reduced (8, 6);
+    const auto sample = proc.engine.getSample (pad);
+    if (sample == nullptr || sample->buffer.getNumSamples() == 0)
+    {
+        g.setColour (kLcdDim);
+        g.setFont (mono (12.0f));
+        g.drawText (proc.isPadMissing (pad) ? "NO ENCONTRADO" : "SIN SAMPLE: ARRASTRA UN AUDIO A UN PAD",
+                    area, juce::Justification::centred);
+        return;
+    }
+
+    // picos por columna (solo cuando cambia el sample o el ancho)
+    if (sample != cachedSample || (int) peaks.size() != area.getWidth())
+    {
+        cachedSample = sample;
+        peaks.assign ((size_t) std::max (1, area.getWidth()), 0.0f);
+        const auto& buf = sample->buffer;
+        const int len = buf.getNumSamples();
+        for (size_t x = 0; x < peaks.size(); ++x)
+        {
+            const int from = (int) ((juce::int64) x * len / (juce::int64) peaks.size());
+            const int to = std::max (from + 1, (int) ((juce::int64) (x + 1) * len / (juce::int64) peaks.size()));
+            float peak = 0.0f;
+            for (int c = 0; c < buf.getNumChannels(); ++c)
+                peak = std::max (peak, buf.getMagnitude (c, from, std::min (to, len) - from));
+            peaks[x] = std::min (1.0f, peak);
+        }
+    }
+
+    auto value = [this] (const char* name) { return proc.apvts.getRawParameterValue (DrumProcessor::padParamId (pad, name))->load(); };
+    const bool reversed = value ("rev") > 0.5f;
+    const float decay = value ("decay") * 0.01f;
+    const int n = (int) peaks.size();
+    const int decayEnd = (int) std::round (decay * (float) n);   // columnas que suenan (contando desde donde arranca)
+    const float mid = (float) area.getCentreY(), half = (float) area.getHeight() * 0.5f;
+
+    for (int x = 0; x < n; ++x)
+    {
+        // con REVERSE el sonido arranca a la derecha: lo que corta el DECAY queda a la izquierda
+        const int played = reversed ? n - 1 - x : x;
+        const bool audible = played < decayEnd;
+        const float h = std::max (0.5f, peaks[(size_t) x] * half);
+        g.setColour (audible ? kLcd : kLcdDim.withAlpha (0.45f));
+        g.fillRect ((float) (area.getX() + x), mid - h, 1.0f, h * 2.0f);
+    }
+
+    g.setFont (mono (10.0f));
+    g.setColour (kLcdDim);
+    const double seconds = sample->buffer.getNumSamples() / sample->sampleRate;
+    g.drawText (juce::String (seconds, 2) + " s" + (reversed ? "  REV" : ""), area, juce::Justification::topRight);
+}
+
+//==============================================================================
 DrumEditor::DrumEditor (DrumProcessor& p)
     : AudioProcessorEditor (&p), proc (p), pads (p), masterAttachment (p.apvts, "master", master),
-      pressureAtt (p.apvts, "press", pressure)
+      waveform (p), pressureAtt (p.apvts, "press", pressure)
 {
     look.applyTheme();
     setLookAndFeel (&look);
@@ -124,10 +199,70 @@ DrumEditor::DrumEditor (DrumProcessor& p)
     status.setColour (juce::Label::textColourId, kInkDim);
     addAndMakeVisible (status);
 
-    //---- panel del pad
+    //---- sonido del pad
     padTitle.setFont (sans (18.0f));
     padTitle.setColour (juce::Label::textColourId, kInk);
     addAndMakeVisible (padTitle);
+    addAndMakeVisible (waveform);
+    setupKnob (vol, "Vol", " dB");
+    setupKnob (pan, "Pan", "");
+    setupKnob (pitch, "Pitch", " st");
+    setupKnob (decay, "Decay", " %");
+    for (auto* t : { &reverse, &mute, &monoButton })
+        addAndMakeVisible (*t);
+    setupCaption (chokeCaption, "CHOKE");
+    setupCaption (outputCaption, "SALIDA");
+    setupCaption (noteCaption, "NOTA");
+    choke.addItemList ({ "Off", "1", "2", "3", "4", "5", "6", "7", "8" }, 1);
+    output.addItemList (DrumProcessor::outputNames(), 1);
+    addAndMakeVisible (choke);
+    addAndMakeVisible (output);
+    noteLabel.setFont (mono (13.0f));
+    noteLabel.setColour (juce::Label::textColourId, kLcd);
+    noteLabel.setColour (juce::Label::backgroundColourId, kDisplay);
+    noteLabel.setJustificationType (juce::Justification::centred);
+    addAndMakeVisible (noteLabel);
+    learnButton.setClickingTogglesState (false);
+    learnButton.setColour (juce::TextButton::buttonOnColourId, kRed);
+    learnButton.onClick = [this]
+    {
+        auto& learn = proc.engine.learnPad;
+        learn.store (learn.load() == attachedPad ? -1 : attachedPad);
+    };
+    addAndMakeVisible (learnButton);
+    monoButton.setTooltip ("Un golpe nuevo corta el anterior del mismo pad");
+    choke.setTooltip ("Los pads del mismo grupo se cortan entre si (ej. hi-hat cerrado y abierto)");
+    output.setTooltip ("Salida del plugin: en FL se conectan al mixer desde la pestana de entradas y salidas del plugin");
+    learnButton.setTooltip ("Toca una nota en tu controlador para asignarla a este pad");
+
+    //---- MIDI
+    midiTitle.setFont (sans (14.0f));
+    midiTitle.setText ("MIDI", juce::dontSendNotification);
+    midiTitle.setColour (juce::Label::textColourId, kInkDim);
+    addAndMakeVisible (midiTitle);
+    setupCaption (channelCaption, "CANAL");
+    setupCaption (rangeCaption, "RANGO");
+    setupCaption (rangeTo, "a");
+    rangeTo.setJustificationType (juce::Justification::centred);
+    channel.addItem ("Todos", 1);
+    for (int c = 1; c <= 16; ++c)
+        channel.addItem (juce::String (c), c + 1);
+    for (int note = 0; note < 128; ++note)
+    {
+        rangeLo.addItem (noteName (note), note + 1);
+        rangeHi.addItem (noteName (note), note + 1);
+    }
+    for (auto* c : { &channel, &rangeLo, &rangeHi })
+        addAndMakeVisible (*c);
+    channelAtt = std::make_unique<ComboAttachment> (proc.apvts, "chan", channel);
+    rangeLoAtt = std::make_unique<ComboAttachment> (proc.apvts, "rlo", rangeLo);
+    rangeHiAtt = std::make_unique<ComboAttachment> (proc.apvts, "rhi", rangeHi);
+
+    //---- roll del pad
+    rollTitle.setFont (sans (14.0f));
+    rollTitle.setText ("ROLL", juce::dontSendNotification);
+    rollTitle.setColour (juce::Label::textColourId, kInkDim);
+    addAndMakeVisible (rollTitle);
     for (auto* t : { &retrigger, &latch, &ramp, &pressure })
         addAndMakeVisible (*t);
 
@@ -169,7 +304,11 @@ DrumEditor::DrumEditor (DrumProcessor& p)
     addAndMakeVisible (globalTitle);
     setupFader (swing, "Swing", " %");
     setupFader (humanize, "Humanize", " %");
+    setupFader (velSens, "Vel", " %");
+    setupFader (voices, "Voces", "");
     swing.attachment = std::make_unique<SliderAttachment> (proc.apvts, "swing", swing.slider);
+    velSens.attachment = std::make_unique<SliderAttachment> (proc.apvts, "vel", velSens.slider);
+    voices.attachment = std::make_unique<SliderAttachment> (proc.apvts, "voices", voices.slider);
     humanize.attachment = std::make_unique<SliderAttachment> (proc.apvts, "hum", humanize.slider);
     bpmLabel.setFont (mono (12.0f));
     bpmLabel.setColour (juce::Label::textColourId, kInkDim);
@@ -183,7 +322,7 @@ DrumEditor::DrumEditor (DrumProcessor& p)
     proc.addChangeListener (this);
     refresh();
     startTimerHz (30);
-    setSize (1060, 640);
+    setSize (1340, 720);
 }
 
 DrumEditor::~DrumEditor()
@@ -209,6 +348,24 @@ void DrumEditor::setupFader (Fader& f, const juce::String& name, const juce::Str
     f.slider.setColour (juce::Slider::textBoxBackgroundColourId, kDisplay);
     f.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     addAndMakeVisible (f.slider);
+}
+
+void DrumEditor::setupKnob (Knob& k, const juce::String& name, const juce::String& suffix)
+{
+    setupCaption (k.label, name.toUpperCase());
+    k.label.setJustificationType (juce::Justification::centred);
+    k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 68, 18);
+    k.slider.setTextValueSuffix (suffix);
+    k.slider.setColour (juce::Slider::textBoxTextColourId, kLcd);
+    k.slider.setColour (juce::Slider::textBoxBackgroundColourId, kDisplay);
+    k.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    addAndMakeVisible (k.slider);
+}
+
+void DrumEditor::layoutKnob (Knob& k, juce::Rectangle<int> area)
+{
+    k.label.setBounds (area.removeFromTop (14));
+    k.slider.setBounds (area.reduced (4, 0));
 }
 
 void DrumEditor::layoutFader (Fader& f, juce::Rectangle<int> row)
@@ -238,6 +395,9 @@ void DrumEditor::attachPad (int pad)
     accentGroupAtt.reset(); rampBeatsAtt.reset();
     for (auto* f : { &freeHz, &gate, &accent, &pitchVar })
         f->attachment.reset();
+    for (auto* k : { &vol, &pan, &pitch, &decay })
+        k->attachment.reset();
+    reverseAtt.reset(); muteAtt.reset(); monoAtt.reset(); chokeAtt.reset(); outputAtt.reset();
 
     auto id = [pad] (const char* name) { return DrumProcessor::padParamId (pad, name); };
     retriggerAtt = std::make_unique<ButtonAttachment> (proc.apvts, id ("rtg"), retrigger);
@@ -249,6 +409,16 @@ void DrumEditor::attachPad (int pad)
     gate.attachment = std::make_unique<SliderAttachment> (proc.apvts, id ("gate"), gate.slider);
     accent.attachment = std::make_unique<SliderAttachment> (proc.apvts, id ("acc"), accent.slider);
     pitchVar.attachment = std::make_unique<SliderAttachment> (proc.apvts, id ("pvar"), pitchVar.slider);
+    vol.attachment = std::make_unique<SliderAttachment> (proc.apvts, id ("vol"), vol.slider);
+    pan.attachment = std::make_unique<SliderAttachment> (proc.apvts, id ("pan"), pan.slider);
+    pitch.attachment = std::make_unique<SliderAttachment> (proc.apvts, id ("pitch"), pitch.slider);
+    decay.attachment = std::make_unique<SliderAttachment> (proc.apvts, id ("decay"), decay.slider);
+    reverseAtt = std::make_unique<ButtonAttachment> (proc.apvts, id ("rev"), reverse);
+    muteAtt = std::make_unique<ButtonAttachment> (proc.apvts, id ("mute"), mute);
+    monoAtt = std::make_unique<ButtonAttachment> (proc.apvts, id ("mono"), monoButton);
+    chokeAtt = std::make_unique<ComboAttachment> (proc.apvts, id ("choke"), choke);
+    outputAtt = std::make_unique<ComboAttachment> (proc.apvts, id ("out"), output);
+    waveform.setPad (pad);
     timerCallback();
 }
 
@@ -270,8 +440,14 @@ void DrumEditor::refresh()
 void DrumEditor::timerCallback()
 {
     pads.repaint();
+    waveform.repaint();
     if (attachedPad < 0)
         return;
+
+    if (proc.engine.lastLearnedPad.exchange (-1) >= 0)
+        proc.updateHostDisplay();   // el proyecto cambio (nota nueva): que el DAW lo sepa
+    learnButton.setToggleState (proc.engine.learnPad.load() == attachedPad, juce::dontSendNotification);
+    noteLabel.setText (noteName (proc.engine.padNote[(size_t) attachedPad].load()), juce::dontSendNotification);
 
     auto value = [this] (const char* name) { return proc.apvts.getRawParameterValue (DrumProcessor::padParamId (attachedPad, name))->load(); };
     const bool on = value ("rtg") > 0.5f;
@@ -319,9 +495,18 @@ void DrumEditor::paint (juce::Graphics& g)
     g.setColour (kBodyLine);
     g.fillRect (18, pads.getY() - 8, getWidth() - 36, 1);
     g.fillRect (18, status.getY() - 6, getWidth() - 36, 1);
-    g.fillRect (panelBounds.getX() - 10, panelBounds.getY(), 1, panelBounds.getHeight());
-    g.fillRect (panelBounds.getX(), padTitle.getBottom() + 2, panelBounds.getWidth(), 1);
+    // separadores de columnas y lineas bajo los titulos
+    for (const auto& col : { soundBounds, panelBounds })
+        g.fillRect (col.getX() - 11, col.getY(), 1, col.getHeight());
+    g.fillRect (soundBounds.getX(), padTitle.getBottom() + 2, soundBounds.getWidth(), 1);
+    g.fillRect (soundBounds.getX(), midiTitle.getBottom() + 2, soundBounds.getWidth(), 1);
+    g.fillRect (panelBounds.getX(), rollTitle.getBottom() + 2, panelBounds.getWidth(), 1);
     g.fillRect (panelBounds.getX(), globalTitle.getBottom() + 2, panelBounds.getWidth(), 1);
+
+    // mini pantallas detras de los valores de las perillas
+    g.setColour (kDisplay);
+    for (auto* k : { &vol, &pan, &pitch, &decay })
+        g.fillRoundedRectangle (k->slider.getBounds().removeFromBottom (18).reduced (2, 0).toFloat(), 4.0f);
 }
 
 void DrumEditor::resized()
@@ -338,65 +523,128 @@ void DrumEditor::resized()
     area.removeFromBottom (10);
     area.removeFromTop (10);
 
-    pads.setBounds (area.removeFromLeft (590));
+    // tres columnas: pads | sonido y MIDI del pad | roll y generales
+    pads.setBounds (area.removeFromLeft (area.getHeight()));
+    area.removeFromLeft (22);
+    soundBounds = area.removeFromLeft ((area.getWidth() - 22) / 2);
     area.removeFromLeft (22);
     panelBounds = area;
 
-    //---- panel del pad
-    auto panel = area;
-    auto row = [&panel] (int h = 30)
+    auto rows = [] (juce::Rectangle<int>& col)
     {
-        auto r = panel.removeFromTop (h);
-        panel.removeFromTop (8);
-        return r;
+        return [&col] (int h = 30)
+        {
+            auto r = col.removeFromTop (h);
+            col.removeFromTop (8);
+            return r;
+        };
     };
 
-    padTitle.setBounds (row (26));
+    //---- columna del medio: sonido
     {
-        auto r = row();
-        retrigger.setBounds (r.removeFromLeft (140));
-        r.removeFromLeft (8);
-        latch.setBounds (r.removeFromLeft (100));
-    }
-    {
-        auto r = row();
-        rateCaption.setBounds (r.removeFromLeft (52));
-        const int w = r.getWidth() / eng::kNumRates;
-        for (auto& b : rateButtons)
-            b.setBounds (r.removeFromLeft (w).reduced (2, 0));
-    }
-    {
-        auto r = row();
-        modeCaption.setBounds (r.removeFromLeft (52));
-        syncButton.setBounds (r.removeFromLeft (80).reduced (2, 0));
-        freeButton.setBounds (r.removeFromLeft (80).reduced (2, 0));
-    }
-    layoutFader (freeHz, row());
-    layoutFader (gate, row());
-    {
-        auto r = row();
-        accentGroup.setBounds (r.removeFromRight (70));
-        r.removeFromRight (6);
-        layoutFader (accent, r);
-    }
-    {
-        auto r = row();
-        ramp.setBounds (r.removeFromLeft (140));
-        r.removeFromLeft (8);
-        rampBeats.setBounds (r.removeFromLeft (110));
-    }
-    layoutFader (pitchVar, row());
+        auto col = soundBounds;
+        auto row = rows (col);
+        padTitle.setBounds (row (26));
+        waveform.setBounds (row (96));
+        {
+            auto r = row (86);
+            const int w = r.getWidth() / 4;
+            for (auto* k : { &vol, &pan, &pitch, &decay })
+                layoutKnob (*k, r.removeFromLeft (w));
+        }
+        {
+            auto r = row();
+            const int w = (r.getWidth() - 16) / 3;
+            reverse.setBounds (r.removeFromLeft (w));
+            r.removeFromLeft (8);
+            mute.setBounds (r.removeFromLeft (w));
+            r.removeFromLeft (8);
+            monoButton.setBounds (r);
+        }
+        {
+            auto r = row();
+            chokeCaption.setBounds (r.removeFromLeft (56));
+            choke.setBounds (r.removeFromLeft (80));
+            r.removeFromLeft (16);
+            outputCaption.setBounds (r.removeFromLeft (60));
+            output.setBounds (r);
+        }
+        {
+            auto r = row();
+            noteCaption.setBounds (r.removeFromLeft (56));
+            noteLabel.setBounds (r.removeFromLeft (80).reduced (0, 3));
+            r.removeFromLeft (16);
+            learnButton.setBounds (r.removeFromLeft (100));
+        }
 
-    //---- generales (abajo del panel)
-    panel.removeFromTop (6);
-    {
-        auto r = row (22);
-        bpmLabel.setBounds (r.removeFromRight (140));
-        globalTitle.setBounds (r);
+        col.removeFromTop (6);
+        midiTitle.setBounds (row (22));
+        {
+            auto r = row();
+            channelCaption.setBounds (r.removeFromLeft (56));
+            channel.setBounds (r.removeFromLeft (100));
+        }
+        {
+            auto r = row();
+            rangeCaption.setBounds (r.removeFromLeft (56));
+            rangeLo.setBounds (r.removeFromLeft (90));
+            rangeTo.setBounds (r.removeFromLeft (24));
+            rangeHi.setBounds (r.removeFromLeft (90));
+        }
     }
-    layoutFader (swing, row());
-    layoutFader (humanize, row());
-    pressure.setBounds (row().removeFromLeft (140));
+
+    //---- columna derecha: roll y generales
+    {
+        auto col = panelBounds;
+        auto row = rows (col);
+        rollTitle.setBounds (row (22));
+        {
+            auto r = row();
+            retrigger.setBounds (r.removeFromLeft (140));
+            r.removeFromLeft (8);
+            latch.setBounds (r.removeFromLeft (100));
+        }
+        {
+            auto r = row();
+            rateCaption.setBounds (r.removeFromLeft (52));
+            const int w = r.getWidth() / eng::kNumRates;
+            for (auto& b : rateButtons)
+                b.setBounds (r.removeFromLeft (w).reduced (2, 0));
+        }
+        {
+            auto r = row();
+            modeCaption.setBounds (r.removeFromLeft (52));
+            syncButton.setBounds (r.removeFromLeft (80).reduced (2, 0));
+            freeButton.setBounds (r.removeFromLeft (80).reduced (2, 0));
+        }
+        layoutFader (freeHz, row());
+        layoutFader (gate, row());
+        {
+            auto r = row();
+            accentGroup.setBounds (r.removeFromRight (70));
+            r.removeFromRight (6);
+            layoutFader (accent, r);
+        }
+        {
+            auto r = row();
+            ramp.setBounds (r.removeFromLeft (140));
+            r.removeFromLeft (8);
+            rampBeats.setBounds (r.removeFromLeft (110));
+        }
+        layoutFader (pitchVar, row());
+
+        col.removeFromTop (6);
+        {
+            auto r = row (22);
+            bpmLabel.setBounds (r.removeFromRight (140));
+            globalTitle.setBounds (r);
+        }
+        layoutFader (swing, row());
+        layoutFader (humanize, row());
+        layoutFader (velSens, row());
+        layoutFader (voices, row());
+        pressure.setBounds (row().removeFromLeft (140));
+    }
 }
 
 //==============================================================================

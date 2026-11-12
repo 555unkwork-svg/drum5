@@ -27,6 +27,22 @@ private:
     int held = -1;
 };
 
+/** Forma de onda del pad elegido, con REVERSE y DECAY dibujados encima. */
+class WaveformView final : public juce::Component
+{
+public:
+    explicit WaveformView (DrumProcessor&);
+    void setPad (int pad);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;   // clic: toca el pad
+
+private:
+    DrumProcessor& proc;
+    int pad = 0;
+    eng::SamplePtr cachedSample;
+    std::vector<float> peaks;   // pico por columna, calculado al cambiar el sample o el ancho
+};
+
 class DrumEditor final : public juce::AudioProcessorEditor,
                          public juce::FileDragAndDropTarget,
                          private juce::ChangeListener,
@@ -49,6 +65,14 @@ private:
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
     using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
+    /** Una perilla con su nombre arriba y el valor abajo. */
+    struct Knob
+    {
+        juce::Slider slider { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow };
+        juce::Label label;
+        std::unique_ptr<SliderAttachment> attachment;
+    };
+
     /** Un fader horizontal con su nombre a la izquierda. */
     struct Fader
     {
@@ -62,6 +86,8 @@ private:
     void refresh();
     void attachPad (int pad);
     void setupFader (Fader&, const juce::String& name, const juce::String& suffix);
+    void setupKnob (Knob&, const juce::String& name, const juce::String& suffix);
+    void layoutKnob (Knob&, juce::Rectangle<int>);
     void setupCaption (juce::Label&, const juce::String& text);
     void layoutFader (Fader&, juce::Rectangle<int> row);
     void setChoice (const char* name, int index);
@@ -79,10 +105,26 @@ private:
     juce::Label status;
     std::unique_ptr<juce::FileChooser> chooser;
 
-    //---- panel del pad elegido
+    //---- sonido del pad elegido (columna del medio)
     int attachedPad = -1;
-    juce::Rectangle<int> panelBounds, globalBounds;
+    juce::Rectangle<int> soundBounds, panelBounds;
     juce::Label padTitle;
+    WaveformView waveform;
+    Knob vol, pan, pitch, decay;
+    juce::ToggleButton reverse { "Reverse" }, mute { "Mute" }, monoButton { "Mono" };
+    std::unique_ptr<ButtonAttachment> reverseAtt, muteAtt, monoAtt;
+    juce::Label chokeCaption, outputCaption, noteCaption, noteLabel;
+    juce::ComboBox choke, output;
+    std::unique_ptr<ComboAttachment> chokeAtt, outputAtt;
+    juce::TextButton learnButton { "LEARN" };
+
+    //---- MIDI (generales)
+    juce::Label midiTitle, channelCaption, rangeCaption, rangeTo;
+    juce::ComboBox channel, rangeLo, rangeHi;
+    std::unique_ptr<ComboAttachment> channelAtt, rangeLoAtt, rangeHiAtt;
+
+    //---- roll del pad elegido (columna derecha)
+    juce::Label rollTitle;
     juce::ToggleButton retrigger { "Retrigger" }, latch { "Latch" }, ramp { "Rate Ramp" };
     std::unique_ptr<ButtonAttachment> retriggerAtt, latchAtt, rampAtt;
     juce::Label rateCaption, modeCaption;
@@ -94,7 +136,7 @@ private:
 
     //---- generales
     juce::Label globalTitle, bpmLabel;
-    Fader swing, humanize;
+    Fader swing, humanize, velSens, voices;
     juce::ToggleButton pressure { "Presion" };
     ButtonAttachment pressureAtt;
 
