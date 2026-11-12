@@ -53,6 +53,13 @@ static void runTests (const juce::String& screenshot)
 {
     const auto dir = juce::File::createTempFile ("drum5-tests");
     dir.createDirectory();
+    // la biblioteca del browser va a una carpeta de prueba, no a la del usuario
+    const auto libraryDir = dir.getChildFile ("biblioteca");
+   #if JUCE_WINDOWS
+    _putenv_s ("DRUM5_BIBLIOTECA", libraryDir.getFullPathName().toRawUTF8());
+   #else
+    setenv ("DRUM5_BIBLIOTECA", libraryDir.getFullPathName().toRawUTF8(), 1);
+   #endif
 
     std::printf ("Cargar archivos, guardar y recuperar el proyecto\n");
     const auto kick = writeWav (dir, "Kick 808.wav", 4410);
@@ -89,7 +96,11 @@ static void runTests (const juce::String& screenshot)
         onMessageThread ([&] { p.loadSampleAsync (2, kick); loadingNow = p.isPadLoading (2); });
         CHECK (loadingNow, "el pad tiene que figurar CARGANDO");
         waitLoaded (p, 2);
-        CHECK (p.getPadFile (2) == kick, "la carga en segundo plano no termino");
+        CHECK (p.getPadFile (2).getFileName() == kick.getFileName(), "la carga en segundo plano no termino");
+        // el sample entro al browser y, en modo copia, el pad usa la copia de la biblioteca
+        CHECK (p.library->size() == 1, "el sample tendria que estar en el browser (%d)", p.library->size());
+        CHECK (p.getPadFile (2).isAChildOf (libraryDir), "en modo copia el pad usa la copia: %s", p.getPadFile (2).getFullPathName().toRawUTF8());
+        CHECK (p.library->getEntries ("Kick").size() == 1, "\"Kick 808\" tendria que quedar como Kick");
 
         onMessageThread ([&] { p.loadSampleAsync (3, bad); });
         waitLoaded (p, 3);
@@ -187,6 +198,16 @@ static void runTests (const juce::String& screenshot)
             juce::FileOutputStream out { juce::File (screenshot) };
             juce::PNGImageFormat().writeImageToStream (image, out);
             CHECK (out.getStatus().wasOk(), "no se pudo guardar la captura");
+
+            // y el browser con los samples de la prueba
+            p.library->add (snare.getSiblingFile ("movido.wav"));
+            if (auto* drum = dynamic_cast<DrumEditor*> (editor.get()))
+                drum->setBrowserMode (true);
+            const auto browserImage = editor->createComponentSnapshot (editor->getLocalBounds(), true, 2.0f);
+            const juce::File browserFile (screenshot.upToLastOccurrenceOf (".", false, false) + "-browser.png");
+            browserFile.deleteFile();
+            juce::FileOutputStream out2 { browserFile };
+            juce::PNGImageFormat().writeImageToStream (browserImage, out2);
         });
 
     dir.deleteRecursively();

@@ -101,6 +101,39 @@ void PadGrid::mouseUp (const juce::MouseEvent&)
 }
 
 
+bool PadGrid::isInterestedInDragSource (const SourceDetails& d)
+{
+    return d.description.toString().startsWith (BrowserView::kDragPrefix);
+}
+
+void PadGrid::itemDragMove (const SourceDetails& d)
+{
+    const int target = padAt (d.localPosition.toInt());
+    if (target != dropTarget)
+    {
+        dropTarget = target;
+        repaint();
+    }
+}
+
+void PadGrid::itemDragExit (const SourceDetails&)
+{
+    dropTarget = -1;
+    repaint();
+}
+
+void PadGrid::itemDropped (const SourceDetails& d)
+{
+    dropTarget = -1;
+    const int pad = padAt (d.localPosition.toInt());
+    if (pad >= 0)
+    {
+        proc.setSelectedPad (pad);
+        proc.loadSampleAsync (pad, juce::File (d.description.toString().fromFirstOccurrenceOf (BrowserView::kDragPrefix, false, false)));
+    }
+    repaint();
+}
+
 //==============================================================================
 WaveformView::WaveformView (DrumProcessor& p) : proc (p) {}
 
@@ -177,7 +210,7 @@ void WaveformView::paint (juce::Graphics& g)
 //==============================================================================
 DrumEditor::DrumEditor (DrumProcessor& p)
     : AudioProcessorEditor (&p), proc (p), pads (p), masterAttachment (p.apvts, "master", master),
-      waveform (p), pressureAtt (p.apvts, "press", pressure)
+      browser (p), waveform (p), pressureAtt (p.apvts, "press", pressure)
 {
     look.applyTheme();
     setLookAndFeel (&look);
@@ -189,6 +222,11 @@ DrumEditor::DrumEditor (DrumProcessor& p)
     addAndMakeVisible (clearButton);
     loadButton.onClick = [this] { choosePadFile (proc.getSelectedPad()); };
     clearButton.onClick = [this] { proc.clearPad (proc.getSelectedPad()); };
+    addAndMakeVisible (browserButton);
+    browserButton.setColour (juce::TextButton::buttonOnColourId, kRed);
+    browserButton.onClick = [this] { setBrowserMode (! browserMode); };
+    browserButton.setTooltip ("Todo lo que fuiste cargando: escuchalo, arrastralo a un pad o exportalo como kit");
+    addChildComponent (browser);
 
     master.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     master.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 18);
@@ -422,8 +460,21 @@ void DrumEditor::attachPad (int pad)
     timerCallback();
 }
 
+void DrumEditor::setBrowserMode (bool on)
+{
+    browserMode = on;
+    browserButton.setToggleState (on, juce::dontSendNotification);
+    if (on)
+        browser.refresh (true);   // otra instancia pudo haber sumado samples
+    resized();
+    refresh();
+    repaint();
+}
+
 void DrumEditor::refresh()
 {
+    if (browserMode)
+        browser.refresh (false);
     const int pad = proc.getSelectedPad();
     attachPad (pad);
     const auto name = proc.getPadName (pad);
@@ -432,7 +483,8 @@ void DrumEditor::refresh()
     if (const auto error = proc.takeLoadError(); error.isNotEmpty())
         status.setText (error, juce::dontSendNotification);
     else
-        status.setText ("Mantene un pad para el roll. Clic derecho en un pad: cargar o vaciar. Arrastra samples encima de los pads.",
+        status.setText (browserMode ? "Browser: clic para escuchar, doble clic carga en el pad elegido, o arrastra el sample a un pad. Clic derecho: mas opciones."
+                                    : "Mantene un pad para el roll. Clic derecho en un pad: cargar o vaciar. Arrastra samples encima de los pads.",
                         juce::dontSendNotification);
     pads.repaint();
 }
@@ -495,6 +547,12 @@ void DrumEditor::paint (juce::Graphics& g)
     g.setColour (kBodyLine);
     g.fillRect (18, pads.getY() - 8, getWidth() - 36, 1);
     g.fillRect (18, status.getY() - 6, getWidth() - 36, 1);
+    if (browserMode)
+    {
+        g.fillRect (soundBounds.getX() - 11, soundBounds.getY(), 1, soundBounds.getHeight());
+        return;
+    }
+
     // separadores de columnas y lineas bajo los titulos
     for (const auto& col : { soundBounds, panelBounds })
         g.fillRect (col.getX() - 11, col.getY(), 1, col.getHeight());
@@ -518,6 +576,8 @@ void DrumEditor::resized()
     clearButton.setBounds (header.removeFromRight (90).withSizeKeepingCentre (90, 30));
     header.removeFromRight (8);
     loadButton.setBounds (header.removeFromRight (90).withSizeKeepingCentre (90, 30));
+    header.removeFromRight (24);
+    browserButton.setBounds (header.removeFromRight (110).withSizeKeepingCentre (110, 30));
 
     status.setBounds (area.removeFromBottom (22));
     area.removeFromBottom (10);
@@ -645,6 +705,14 @@ void DrumEditor::resized()
         layoutFader (voices, row());
         pressure.setBounds (row().removeFromLeft (140));
     }
+
+    // el browser ocupa las dos columnas de la derecha; los pads quedan siempre
+    const auto right = soundBounds.getUnion (panelBounds);
+    browser.setBounds (right);
+    browser.setVisible (browserMode);
+    for (auto* child : getChildren())
+        if (child != &browser && right.intersects (child->getBounds()))
+            child->setVisible (! browserMode);
 }
 
 //==============================================================================
@@ -708,6 +776,12 @@ void DrumEditor::fileDragExit (const juce::StringArray&)
 void DrumEditor::filesDropped (const juce::StringArray& files, int x, int y)
 {
     pads.dropTarget = -1;
+    // sobre el browser: se suman a la biblioteca (las carpetas, enteras) sin cargarlos en un pad
+    if (browserMode && browser.getBounds().contains (x, y))
+    {
+        browser.addDropped (files);
+        return;
+    }
     // soltado sobre un pad: desde ese pad; afuera de los pads: desde el pad elegido
     const int target = padAtEditorPoint (x, y);
     const int first = target >= 0 ? target : proc.getSelectedPad();

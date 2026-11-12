@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/DrumEngine.h"
+#include "Library/Library.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -67,7 +68,13 @@ public:
     static const juce::StringArray& rateNames();
     static juce::StringArray outputNames();
 
+    /** Escucha un archivo del browser (sin cargarlo en un pad). */
+    void previewFile (const juce::File& file);
+    /** Un trabajo largo (exportar un kit) en el hilo de carga, para no trabar la interfaz. */
+    void runInBackground (std::function<void()> job);
+
     juce::AudioFormatManager formats;
+    std::unique_ptr<lib::Library> library = makeLibrary();
     juce::AudioProcessorValueTreeState apvts;
     eng::DrumEngine engine;
 
@@ -75,6 +82,7 @@ private:
     void timerCallback() override { engine.purgeRetired(); }
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     static BusesProperties makeBuses();
+    static std::unique_ptr<lib::Library> makeLibrary();
     eng::SamplePtr readSample (const juce::File& file);
     void applySample (int pad, const juce::File& file, eng::SamplePtr sample);
     void readSettings();

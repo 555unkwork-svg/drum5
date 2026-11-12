@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BrowserView.h"
 #include "Look.h"
 #include "PluginProcessor.h"
 
@@ -7,7 +8,8 @@
 
 /** Los 16 pads: clic para tocar (mas arriba suena mas fuerte; mantener = roll), clic derecho para el menu,
     y se puede soltar un archivo encima de cada uno. */
-class PadGrid final : public juce::Component
+class PadGrid final : public juce::Component,
+                      public juce::DragAndDropTarget
 {
 public:
     explicit PadGrid (DrumProcessor&);
@@ -19,6 +21,12 @@ public:
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+
+    // arrastrar un sample del browser a un pad
+    bool isInterestedInDragSource (const SourceDetails&) override;
+    void itemDragMove (const SourceDetails&) override;
+    void itemDragExit (const SourceDetails&) override;
+    void itemDropped (const SourceDetails&) override;
 
     int dropTarget = -1;   // pad resaltado mientras se arrastra un archivo
 
@@ -45,6 +53,7 @@ private:
 
 class DrumEditor final : public juce::AudioProcessorEditor,
                          public juce::FileDragAndDropTarget,
+                         public juce::DragAndDropContainer,
                          private juce::ChangeListener,
                          private juce::Timer
 {
@@ -99,7 +108,14 @@ private:
     DrumProcessor& proc;
     HardwareLook look;
     PadGrid pads;
-    juce::TextButton loadButton { "CARGAR" }, clearButton { "VACIAR" };
+    juce::TextButton loadButton { "CARGAR" }, clearButton { "VACIAR" }, browserButton { "BROWSER" };
+    BrowserView browser;
+    bool browserMode = false;
+
+public:
+    void setBrowserMode (bool on);   // publico para las pruebas (captura del browser)
+
+private:
     juce::Slider master;
     juce::AudioProcessorValueTreeState::SliderAttachment masterAttachment;
     juce::Label status;

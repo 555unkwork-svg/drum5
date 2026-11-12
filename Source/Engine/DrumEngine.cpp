@@ -107,6 +107,50 @@ void DrumEngine::setSample (int pad, SamplePtr sample)
     purgeRetired();
 }
 
+void DrumEngine::playPreview (SamplePtr sample)
+{
+    SamplePtr old;
+    {
+        const juce::SpinLock::ScopedLockType lock (swapLock);
+        old = std::move (shared[(size_t) kPreviewSlot]);
+        shared[(size_t) kPreviewSlot] = std::move (sample);
+    }
+    if (old != nullptr)
+    {
+        const juce::ScopedLock sl (retiredLock);
+        retired.push_back (std::move (old));
+    }
+    previewRequested.store (true);
+}
+
+void DrumEngine::firePreview()
+{
+    const auto& src = current[(size_t) kPreviewSlot];
+    for (auto& other : voices)
+        if (other.active && other.pad == kPreviewSlot)
+            other.gateLeft = 0;   // corta la escucha anterior
+    if (src == nullptr || src->buffer.getNumSamples() == 0)
+        return;
+
+    int index = -1, oldest = -1;
+    for (int i = 0; i < kMaxVoices; ++i)
+    {
+        if (! voices[(size_t) i].active) { index = i; break; }
+        if (oldest < 0 || voices[(size_t) i].age < voices[(size_t) oldest].age)
+            oldest = i;
+    }
+    auto& v = voices[(size_t) (index >= 0 ? index : oldest)];
+    v = Voice();
+    v.active = true;
+    v.pad = kPreviewSlot;
+    v.src = src;
+    v.rate = src->sampleRate / hostRate;
+    v.outL = std::max (0, outputChannel[0]);
+    v.outR = v.outL + 1;
+    v.endPos = (double) src->buffer.getNumSamples();
+    v.age = ++ageCounter;
+}
+
 SamplePtr DrumEngine::getSample (int pad) const
 {
     if (pad < 0 || pad >= kNumPads)
@@ -232,7 +276,8 @@ void DrumEngine::fireHit (int pad, int time, bool first)
     // MONO corta el golpe anterior del mismo pad; CHOKE corta a los otros pads del grupo (con un fundido corto)
     for (auto& other : voices)
         if (other.active && ((ps.mono && other.pad == pad)
-                             || (ps.choke > 0 && other.pad != pad && pads[(size_t) other.pad].choke == ps.choke)))
+                             || (ps.choke > 0 && other.pad != pad && other.pad < kNumPads
+                                 && pads[(size_t) other.pad].choke == ps.choke)))
             other.gateLeft = 0;
 
     // VOCES: si ya suenan las permitidas (o no queda lugar), se corta la mas vieja
@@ -413,10 +458,14 @@ void DrumEngine::render (juce::AudioBuffer<float>& out, int start, int num)
 void DrumEngine::process (juce::AudioBuffer<float>& out, const juce::MidiBuffer& midi, const Transport& transport)
 {
     out.clear();
+    bool swapped = false;
     {
         const juce::SpinLock::ScopedTryLockType lock (swapLock);
         if (lock.isLocked())
+        {
             current = shared;
+            swapped = true;
+        }
     }
 
     for (auto& f : padFlash)
@@ -452,6 +501,9 @@ void DrumEngine::process (juce::AudioBuffer<float>& out, const juce::MidiBuffer&
     for (int p = 0; p < kNumPads; ++p)
         if (rolls[(size_t) p].active && ! rolls[(size_t) p].held && ! pads[(size_t) p].latch)
             rolls[(size_t) p].active = false;
+
+    if (swapped && previewRequested.exchange (false))   // solo con el sample nuevo ya copiado
+        firePreview();
 
     //---- interfaz (al inicio del bloque)
     if (const auto up = uiUp.exchange (0); up != 0)

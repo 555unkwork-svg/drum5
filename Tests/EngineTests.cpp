@@ -619,6 +619,23 @@ static void testOutputs()
     CHECK (lastSound (b, 0) >= 0 && lastSound (b, 6) < 0, "una salida apagada va a Main");
 }
 
+static void testPreview()
+{
+    std::printf ("Escucha del browser: suena por Main y una escucha nueva corta la anterior\n");
+    eng::DrumEngine e;
+    e.prepare (kRate);
+    e.pads[0].choke = 1;   // un pad con choke no tiene que romper nada con la escucha sonando
+    e.setSample (0, makeClick (100));
+    e.playPreview (makeClick (20000));
+    auto b = hit (e, {});
+    CHECK (std::abs (b.getSample (0, 100) - 1.0f) < 0.01f, "la escucha tiene que sonar (%f)", b.getSample (0, 100));
+    e.playPreview (makeRamp (20000));
+    b = hit (e, { { 0, juce::MidiMessage::noteOn (1, kNote, 1.0f) } });
+    CHECK (b.getSample (0, 3000) < 0.2f, "la escucha nueva corta la anterior y empieza desde abajo (%f)", b.getSample (0, 3000));
+    e.playPreview (nullptr);
+    hit (e, {});
+}
+
 int main()
 {
     testSampleAccurate();
@@ -641,6 +658,7 @@ int main()
     testMonoChokeVoices();
     testMidiFiltersAndLearn();
     testOutputs();
+    testPreview();
     std::printf (failures == 0 ? "OK: todo paso\n" : "%d falla(s)\n", failures);
     return failures == 0 ? 0 : 1;
 }

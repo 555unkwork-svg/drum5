@@ -14,7 +14,7 @@ jobs:
         run: cmake -S . -B build -A x64
 
       - name: Compilar
-        run: cmake --build build --config Release --parallel --target Drum5_VST3 Drum5_Standalone EngineTests PluginTests
+        run: cmake --build build --config Release --parallel --target Drum5_VST3 Drum5_Standalone EngineTests PluginTests LibraryTests
 
       - name: Pruebas (motor, estado guardado y carga de samples)
         run: ctest --test-dir build -C Release --output-on-failure --timeout 120
@@ -57,7 +57,7 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Compilar
-        run: cmake --build build --target Drum5_VST3 Drum5_Standalone EngineTests PluginTests
+        run: cmake --build build --target Drum5_VST3 Drum5_Standalone EngineTests PluginTests LibraryTests
 
       - name: Pruebas (motor, estado guardado y carga de samples)
         run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120

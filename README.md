@@ -3,7 +3,7 @@
 Bateria de 16 pads con retrigger al estilo del Note Repeat de la MPC2000XL. Plugin VST3 para Windows y Linux.
 Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 
-## Que hace (v0.3, etapa 3)
+## Que hace (v0.4, etapa 4)
 
 ### Pads
 - 16 pads, cada uno con su sample. Se carga con **CARGAR** (en el pad elegido), con clic derecho sobre el pad,
@@ -26,6 +26,20 @@ Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 ### MIDI
 - **CANAL**: todos o uno solo (1 a 16).
 - **RANGO**: las notas fuera del rango se ignoran.
+
+### Browser (boton BROWSER)
+- Cada sample que cargas en un pad entra al browser y queda para siempre (es uno solo para todos tus proyectos).
+  Tambien podes soltar archivos o carpetas enteras sobre la lista.
+- **COPIAR A LA BIBLIOTECA** (encendido por defecto): cada sample se copia a `Documentos/drum5/Biblioteca` y sigue
+  ahi aunque borres el original; el pad usa la copia. Apagado: se guarda solo la ruta (no ocupa lugar, pero si
+  moves o borras el archivo se pierde).
+- drum5 adivina la categoria por el nombre del archivo y, si no alcanza, por las carpetas donde esta:
+  Kick, 808, Snare, Clap, HH Cerrado, HH Abierto, Rim, Tom, Perc, Crash, Ride, Cymbal, FX, Vox, Chant u Otros.
+  Con clic derecho se cambia; **CATEGORIAS** crea o borra categorias propias.
+- Clic: escuchar. Doble clic: cargar en el pad elegido. Tambien se puede arrastrar a un pad.
+- Busqueda por nombre o categoria, y filtro por categoria.
+- **EXPORTAR CARPETA** / **EXPORTAR ZIP**: exporta lo que se ve en la lista como un kit, con una subcarpeta por categoria.
+- Quitar un sample del browser no borra ningun archivo.
 
 ### Roll (como el Note Repeat de la MPC2000XL), ajustes por pad
 - **RETRIGGER** (viene apagado): mantener el pad repite el golpe. El primero suena al instante; los siguientes caen en la grilla
@@ -53,8 +67,8 @@ Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 
 1. Base: 16 pads que suenan, compilacion automatica. (hecho)
 2. Motor de retrigger. (hecho)
-3. Sampler completo por pad, choke, MIDI Learn, rango y canal MIDI, multi-out. (esta version)
-4. Browser de samples con deteccion de tipo por nombre y carpeta, categorias propias y exportar kit (carpeta o zip).
+3. Sampler completo por pad, choke, MIDI Learn, rango y canal MIDI, multi-out. (hecho)
+4. Browser de samples con deteccion de tipo por nombre y carpeta, categorias propias y exportar kit (carpeta o zip). (esta version)
 5. Presets y pulido visual.
 
 ## Como conseguir el plugin

@@ -7,7 +7,7 @@ set(PLUGIN_MFR_CODE  "Mmrc")           # 4 caracteres, al menos una mayuscula
 set(PLUGIN_CODE      "Drm5")           # 4 caracteres, exactamente una mayuscula
 # -----------------------------------------------------------------------------
 
-project(Drum5 VERSION 0.3.0 LANGUAGES C CXX)
+project(Drum5 VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,7 +26,10 @@ else()
 endif()
 
 # ---- Motor (sin interfaz): los mismos fuentes van al plugin y a las pruebas --
-set(ENGINE_SOURCES Source/Engine/DrumEngine.cpp)
+set(ENGINE_SOURCES
+    Source/Engine/DrumEngine.cpp
+    Source/Library/Classifier.cpp
+    Source/Library/Library.cpp)
 
 function(drum_configure_target target)
     target_sources(${target} PRIVATE ${ENGINE_SOURCES})
@@ -65,6 +68,7 @@ juce_add_plugin(Drum5
 target_sources(Drum5 PRIVATE
     Source/PluginProcessor.cpp
     Source/Look.cpp
+    Source/BrowserView.cpp
     Source/PluginEditor.cpp)
 
 juce_add_binary_data(DrumAssets SOURCES Assets/Sampler5Sans.ttf)
@@ -91,7 +95,13 @@ if(DRUM_BUILD_TESTS)
     target_compile_definitions(PluginTests PRIVATE $<TARGET_PROPERTY:Drum5,COMPILE_DEFINITIONS>)
     target_link_libraries(PluginTests PRIVATE Drum5)
 
+    # browser: deteccion de tipo, biblioteca y exportar kit
+    juce_add_console_app(LibraryTests PRODUCT_NAME "LibraryTests")
+    target_sources(LibraryTests PRIVATE Tests/LibraryTests.cpp)
+    drum_configure_target(LibraryTests)
+
     enable_testing()
     add_test(NAME EngineTests COMMAND EngineTests)
+    add_test(NAME LibraryTests COMMAND LibraryTests)
     add_test(NAME PluginTests COMMAND PluginTests)
 endif()

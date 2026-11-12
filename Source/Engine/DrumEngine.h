@@ -101,6 +101,8 @@ public:
     /** Libera samples viejos que el hilo de audio ya solto. Llamar cada tanto. */
     void purgeRetired();
     void triggerPadFromUI (int pad, bool down, float velocity = 1.0f);
+    /** Escucha un sample del browser por Main (corta la escucha anterior). */
+    void playPreview (SamplePtr sample);
 
     //---- cualquier hilo ----
     std::array<std::atomic<int>, kNumPads> padNote;
@@ -161,8 +163,11 @@ private:
     bool wasPlaying = false;
 
     juce::SpinLock swapLock;
-    std::array<SamplePtr, kNumPads> shared;    // protegido por swapLock
-    std::array<SamplePtr, kNumPads> current;   // copia del hilo de audio
+    static constexpr int kPreviewSlot = kNumPads;   // la escucha del browser usa un lugar extra, sin ajustes de pad
+    std::array<SamplePtr, kNumPads + 1> shared;    // protegido por swapLock
+    std::array<SamplePtr, kNumPads + 1> current;   // copia del hilo de audio
+    std::atomic<bool> previewRequested { false };
+    void firePreview();
     std::vector<SamplePtr> retired;            // nunca el hilo de audio
     juce::CriticalSection retiredLock;         // por si el DAW carga un proyecto desde otro hilo
 

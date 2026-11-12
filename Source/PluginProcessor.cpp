@@ -248,9 +248,11 @@ void DrumProcessor::loadSampleAsync (int pad, const juce::File& file)
     ++loading[(size_t) pad];
     sendChangeMessage();
 
-    loader.addJob ([this, pad, file, flag = alive]
+    loader.addJob ([this, pad, original = file, flag = alive]
     {
-        auto sample = readSample (file);
+        auto sample = readSample (original);
+        // entra al browser (y en modo copia, el pad usa la copia de la biblioteca)
+        const auto file = sample != nullptr ? library->add (original) : original;
         juce::MessageManager::callAsync ([this, pad, file, flag, sample = std::move (sample)]() mutable
         {
             if (! flag->load())
@@ -265,6 +267,33 @@ void DrumProcessor::loadSampleAsync (int pad, const juce::File& file)
             }
         });
     });
+}
+
+void DrumProcessor::runInBackground (std::function<void()> job)
+{
+    loader.addJob (std::move (job));
+}
+
+void DrumProcessor::previewFile (const juce::File& file)
+{
+    loader.addJob ([this, file, flag = alive]
+    {
+        auto sample = readSample (file);
+        juce::MessageManager::callAsync ([this, flag, sample = std::move (sample)]() mutable
+        {
+            if (flag->load() && sample != nullptr)
+                engine.playPreview (std::move (sample));
+        });
+    });
+}
+
+std::unique_ptr<lib::Library> DrumProcessor::makeLibrary()
+{
+    // DRUM5_BIBLIOTECA: otra carpeta para la biblioteca (la usan las pruebas para no tocar la del usuario)
+    const auto custom = juce::SystemStats::getEnvironmentVariable ("DRUM5_BIBLIOTECA", {});
+    if (custom.isNotEmpty() && juce::File::isAbsolutePath (custom))
+        return std::make_unique<lib::Library> (juce::File (custom).getChildFile ("biblioteca.xml"), juce::File (custom).getChildFile ("Biblioteca"));
+    return std::make_unique<lib::Library> (lib::Library::defaultDataFile(), lib::Library::defaultCopyFolder());
 }
 
 void DrumProcessor::clearPad (int pad)
