@@ -1,0 +1,75 @@
+name: Compilar plugin
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar
+        run: cmake -S . -B build -A x64
+
+      - name: Compilar
+        run: cmake --build build --config Release --parallel --target Drum5_VST3 Drum5_Standalone EngineTests PluginTests
+
+      - name: Pruebas (motor, estado guardado y carga de samples)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Captura de la interfaz
+        run: ./build/Release/PluginTests.exe "${{ github.workspace }}/build/interfaz-windows.png"
+
+      - name: Subir captura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Interfaz-Windows
+          path: build/interfaz-windows.png
+          if-no-files-found: ignore
+
+      - name: Subir VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Drum5-VST3-Windows
+          path: build/Drum5_artefacts/Release/VST3/
+
+      - name: Subir version standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: Drum5-Standalone-Windows
+          path: build/Drum5_artefacts/Release/Standalone/*.exe
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libfontconfig1-dev libfreetype-dev libx11-dev \
+            libxcomposite-dev libxcursor-dev libxext-dev libxi-dev libxinerama-dev libxrandr-dev libxrender-dev xvfb
+
+      - name: Configurar
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compilar
+        run: cmake --build build --target Drum5_VST3 Drum5_Standalone EngineTests PluginTests
+
+      - name: Pruebas (motor, estado guardado y carga de samples)
+        run: xvfb-run -a ctest --test-dir build --output-on-failure
+
+      - name: Subir VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Drum5-VST3-Linux
+          path: build/Drum5_artefacts/Release/VST3/
+
+      - name: Subir version standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: Drum5-Standalone-Linux
+          path: build/Drum5_artefacts/Release/Standalone/drum5
