@@ -52,7 +52,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout DrumProcessor::createLayout(
         const String n = "Pad " + String (i + 1) + " ";
         auto id = [i] (const char* name) { return ParameterID { padParamId (i, name), 1 }; };
         auto group = std::make_unique<AudioProcessorParameterGroup> ("pad" + String (i + 1), "Pad " + String (i + 1), " | ");
-        group->addChild (std::make_unique<AudioParameterBool> (id ("rtg"), n + "Retrigger", true));
+        group->addChild (std::make_unique<AudioParameterBool> (id ("rtg"), n + "Retrigger", false));
         group->addChild (std::make_unique<AudioParameterChoice> (id ("rate"), n + "Rate", rateNames(), 2));
         group->addChild (std::make_unique<AudioParameterChoice> (id ("mode"), n + "Modo", StringArray { "SYNC", "LIBRE" }, 0));
         group->addChild (std::make_unique<AudioParameterFloat> (id ("hz"), n + "Libre", NormalisableRange<float> (1.0f, 30.0f, 0.1f, 0.5f), 8.0f,

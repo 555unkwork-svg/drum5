@@ -98,7 +98,10 @@ void DrumEngine::setSample (int pad, SamplePtr sample)
         shared[(size_t) pad] = std::move (sample);
     }
     if (old != nullptr)
+    {
+        const juce::ScopedLock sl (retiredLock);
         retired.push_back (std::move (old));
+    }
     purgeRetired();
 }
 
@@ -113,6 +116,7 @@ SamplePtr DrumEngine::getSample (int pad) const
 void DrumEngine::purgeRetired()
 {
     // un sample retirado se puede borrar cuando nadie mas lo usa (use_count == 1 es el nuestro)
+    const juce::ScopedLock sl (retiredLock);
     retired.erase (std::remove_if (retired.begin(), retired.end(),
                                    [] (const SamplePtr& p) { return p.use_count() <= 1; }),
                    retired.end());
@@ -187,7 +191,11 @@ void DrumEngine::fireHit (int pad, int time, bool first)
 {
     auto& r = rolls[(size_t) pad];
     const auto& ps = pads[(size_t) pad];
-    const double hitBeat = beatAt (time);
+    // el proximo golpe se calcula desde la posicion exacta de este (no desde la muestra redondeada),
+    // si no, un golpe adelantado por el redondeo vuelve a caer en el mismo punto de la grilla
+    const bool exact = ! first && ! ps.freeMode;
+    const double hitBeat = exact ? r.nextBeat : beatAt (time);
+    const double hitSample = (! first && ps.freeMode) ? r.nextSample : (double) time;
 
     float vel = (globals.pressure && ! first && r.pressure >= 0.0f) ? r.pressure : r.velocity;
     if (ps.accent > 0.0f && r.hits % std::max (1, ps.accentGroup) != 0)
@@ -213,7 +221,7 @@ void DrumEngine::fireHit (int pad, int time, bool first)
 
     padFlash[(size_t) pad].store (kFlashBlocks, std::memory_order_relaxed);
     ++r.hits;
-    scheduleNext (pad, hitBeat, (double) time);
+    scheduleNext (pad, hitBeat, hitSample);
 
     const auto& src = current[(size_t) pad];
     if (src == nullptr || src->buffer.getNumSamples() == 0 || vel <= 0.0f)
@@ -275,7 +283,8 @@ void DrumEngine::noteOff (int pad)
 
 void DrumEngine::runRolls (juce::AudioBuffer<float>& out, int from, int to)
 {
-    for (;;)
+    // tope de seguridad: ningun bloque necesita tantos golpes (1/32T a 300 BPM son ~2 por bloque de 512)
+    for (int guard = 0; guard < 256; ++guard)
     {
         int pad = -1;
         double best = (double) to;
@@ -293,7 +302,23 @@ void DrumEngine::runRolls (juce::AudioBuffer<float>& out, int from, int to)
         }
         if (pad < 0)
             break;
-        const int time = juce::jlimit (from, to - 1, (int) std::ceil (best - 1.0e-6));
+
+        // un golpe muy atrasado (mas de 1 muestra antes de este tramo) no se toca: el roll vuelve a la grilla desde aca
+        if (best < (double) from - 1.0)
+        {
+            auto& r = rolls[(size_t) pad];
+            if (pads[(size_t) pad].freeMode)
+                r.nextSample = (double) from;
+            else
+                r.nextBeat = nextGridAfter (beatAt (from) - 1.0e-9, currentStepBeats (pad, beatAt (from)),
+                                            rateSwings (pads[(size_t) pad].rate));
+            continue;
+        }
+
+        // nunca antes de `from` ni en `to` o despues: lo que cae al final del bloque suena en el siguiente
+        const int time = std::max (from, (int) std::ceil (best - 1.0e-6));
+        if (time >= to)
+            break;
         render (out, from, time - from);
         from = time;
         fireHit (pad, time, false);
@@ -303,9 +328,12 @@ void DrumEngine::runRolls (juce::AudioBuffer<float>& out, int from, int to)
 
 void DrumEngine::render (juce::AudioBuffer<float>& out, int start, int num)
 {
-    if (num <= 0)
+    jassert (start >= 0 && start + num <= out.getNumSamples());
+    if (num <= 0 || start < 0 || start + num > out.getNumSamples())
         return;
     const int outChannels = out.getNumChannels();
+    if (outChannels == 0)
+        return;
     const float fadeStep = 1.0f / (kGateFadeMs * 0.001f * (float) hostRate);
 
     for (auto& v : voices)

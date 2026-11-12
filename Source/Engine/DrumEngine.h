@@ -30,7 +30,7 @@ bool rateSwings (Rate);
 
 struct PadSettings
 {
-    bool retrigger = true;
+    bool retrigger = false;
     Rate rate = Rate::r16;
     bool freeMode = false;     // LIBRE: golpes por segundo, sin grilla
     float freeHz = 8.0f;
@@ -137,7 +137,8 @@ private:
     juce::SpinLock swapLock;
     std::array<SamplePtr, kNumPads> shared;    // protegido por swapLock
     std::array<SamplePtr, kNumPads> current;   // copia del hilo de audio
-    std::vector<SamplePtr> retired;            // solo hilo de mensajes
+    std::vector<SamplePtr> retired;            // nunca el hilo de audio
+    juce::CriticalSection retiredLock;         // por si el DAW carga un proyecto desde otro hilo
 
     // golpes desde la interfaz: un bit por pad para apretar y otro para soltar
     std::atomic<juce::uint32> uiDown { 0 }, uiUp { 0 };

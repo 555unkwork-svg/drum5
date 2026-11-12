@@ -17,7 +17,7 @@ jobs:
         run: cmake --build build --config Release --parallel --target Drum5_VST3 Drum5_Standalone EngineTests PluginTests
 
       - name: Pruebas (motor, estado guardado y carga de samples)
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 120
 
       - name: Captura de la interfaz
         run: ./build/Release/PluginTests.exe "${{ github.workspace }}/build/interfaz-windows.png"
@@ -60,7 +60,7 @@ jobs:
         run: cmake --build build --target Drum5_VST3 Drum5_Standalone EngineTests PluginTests
 
       - name: Pruebas (motor, estado guardado y carga de samples)
-        run: xvfb-run -a ctest --test-dir build --output-on-failure
+        run: xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120
 
       - name: Subir VST3
         uses: actions/upload-artifact@v4

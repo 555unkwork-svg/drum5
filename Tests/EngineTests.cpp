@@ -36,7 +36,12 @@ struct Run
     std::vector<std::pair<int, juce::MidiMessage>> events;   // (muestra absoluta, mensaje)
     std::vector<float> out;
 
-    Run() { e.prepare (kRate); }
+    Run()
+    {
+        e.prepare (kRate);
+        for (auto& p : e.pads)
+            p.retrigger = true;   // las pruebas de roll lo usan encendido (en el plugin viene apagado)
+    }
 
     void at (int sample, const juce::MidiMessage& m) { events.push_back ({ sample, m }); }
 
@@ -248,6 +253,7 @@ static void testLoopJump()
     std::printf ("Loop del proyecto: al volver al inicio el roll vuelve a la grilla\n");
     eng::DrumEngine e;
     e.prepare (kRate);
+    e.pads[0].retrigger = true;
     e.setSample (0, makeClick (50));
     juce::AudioBuffer<float> buf (2, kBlock);
     eng::Transport tr { true, 3.9, 120.0 };
@@ -287,6 +293,159 @@ static void testResampleAndManyHits()
     CHECK (buf.getMagnitude (0, 0, kBlock) <= (float) eng::DrumEngine::kMaxVoices + 0.01f, "mas voces que el maximo");
 }
 
+static void testEventAtBlockStartWithLateRoll()
+{
+    std::printf ("Evento MIDI al inicio del bloque con un golpe del roll atrasado (no escribe fuera del buffer)\n");
+    eng::DrumEngine e;
+    e.prepare (kRate);
+    e.pads[0].retrigger = true;
+    e.setSample (0, makeClick (50));
+    e.setSample (1, makeClick (50));
+
+    // bloques de 500 muestras: el 1/16 (6000 muestras) cae justo al inicio del bloque 12
+    constexpr int n = 500;
+    juce::AudioBuffer<float> buf (2, n);
+    eng::Transport tr { true, 0.0, 120.0 };
+    juce::MidiBuffer midi;
+    midi.addEvent (juce::MidiMessage::noteOn (1, kNote, 1.0f), 0);
+    for (int b = 0; b < 12; ++b)
+    {
+        e.process (buf, midi, tr);
+        midi.clear();
+        tr.ppq += n / kBeat;
+    }
+    // el DAW informa la posicion con un redondeo minimo y hay una nota en la muestra 0 del bloque
+    tr.ppq = 0.25 + 1.0e-9;
+    midi.addEvent (juce::MidiMessage::noteOn (1, kNote + 1, 1.0f), 0);
+    e.process (buf, midi, tr);
+    // y un bloque vacio, que algunos DAW mandan
+    juce::AudioBuffer<float> empty (2, 0);
+    juce::MidiBuffer none;
+    e.process (empty, none, tr);
+    CHECK (true, "");
+}
+
+static void testDefaultIsOneShot()
+{
+    std::printf ("Por defecto el retrigger viene apagado: mantener la nota suena una sola vez\n");
+    eng::DrumEngine e;
+    e.prepare (kRate);
+    e.setSample (0, makeClick (50));
+    juce::AudioBuffer<float> buf (2, kBlock);
+    int hits = 0;
+    for (int b = 0; b < 100; ++b)
+    {
+        juce::MidiBuffer midi;
+        if (b == 0)
+            midi.addEvent (juce::MidiMessage::noteOn (1, kNote, 1.0f), 0);
+        e.process (buf, midi, {});
+        for (int i = 0; i < kBlock; ++i)
+            if (std::abs (buf.getSample (0, i)) > 1.0e-4f && (i == 0 || std::abs (buf.getSample (0, i - 1)) <= 1.0e-4f))
+                ++hits;
+    }
+    CHECK (hits == 1, "sono %d veces", hits);
+}
+
+static void testGridHitAtBlockEnd()
+{
+    std::printf ("Golpe de la grilla entre las dos ultimas muestras del bloque (antes colgaba el audio)\n");
+    // 1/16 a 120 BPM = 6000 muestras; con bloques de 499 el golpe cae en 5988 + 11.x: fraccion antes del final
+    for (int n : { 499, 501, 511, 64, 1 })
+    {
+        eng::DrumEngine e;
+        e.prepare (kRate);
+        e.pads[0].retrigger = true;
+        e.setSample (0, makeClick (10));
+        juce::AudioBuffer<float> buf (2, n);
+        eng::Transport tr { true, 0.0004, 117.3 };
+        int hits = 0;
+        float prev = 0.0f;
+        const int blocks = 96000 / n;
+        for (int b = 0; b < blocks; ++b)
+        {
+            juce::MidiBuffer midi;
+            if (b == 0)
+                midi.addEvent (juce::MidiMessage::noteOn (1, kNote, 1.0f), 0);
+            e.process (buf, midi, tr);
+            tr.ppq += n * tr.bpm / 60.0 / kRate;
+            for (int i = 0; i < n; ++i)
+            {
+                const float v = std::abs (buf.getSample (0, i));
+                if (v > 1.0e-4f && prev <= 1.0e-4f)
+                    ++hits;
+                prev = v;
+            }
+        }
+        // 2 segundos a 117.3 BPM = 3.91 tiempos = ~15.6 semicorcheas (+ el primer golpe)
+        CHECK (hits >= 15 && hits <= 17, "bloques de %d: %d golpes, se esperaban ~16", n, hits);
+    }
+}
+
+static void testStress()
+{
+    std::printf ("Estres: bloques al azar (y vacios), tempos, redondeos, loops, play/stop y notas al azar\n");
+    eng::DrumEngine e;
+    e.prepare (kRate);
+    for (int p = 0; p < eng::kNumPads; ++p)
+        e.setSample (p, makeClick (200 + p * 37));
+    juce::Random rng (1234);
+    juce::AudioBuffer<float> buf (2, 1024);
+    eng::Transport tr { true, 0.0, 120.0 };
+    bool finite = true;
+
+    for (int b = 0; b < 30000; ++b)
+    {
+        const int n = rng.nextInt (8) == 0 ? 0 : 1 + rng.nextInt (1024);
+        buf.setSize (2, n, false, false, true);
+
+        if (rng.nextInt (500) == 0) tr.playing = ! tr.playing;
+        if (rng.nextInt (700) == 0) tr.ppq = rng.nextDouble() * 16.0;            // loop o salto
+        if (rng.nextInt (900) == 0) tr.bpm = 60.0 + rng.nextDouble() * 140.0;    // cambio de tempo
+        if (rng.nextInt (300) == 0)
+        {
+            auto& s = e.pads[(size_t) rng.nextInt (eng::kNumPads)];
+            s.retrigger = rng.nextBool();
+            s.rate = (eng::Rate) rng.nextInt (eng::kNumRates);
+            s.freeMode = rng.nextInt (4) == 0;
+            s.freeHz = 1.0f + rng.nextFloat() * 29.0f;
+            s.latch = rng.nextInt (5) == 0;
+            s.gate = 0.05f + rng.nextFloat() * 0.95f;
+            s.accent = rng.nextFloat();
+            s.accentGroup = 2 + rng.nextInt (3);
+            s.ramp = rng.nextBool();
+            s.rampBeats = (float) (1 << rng.nextInt (3));
+            s.pitchVar = rng.nextFloat() * 24.0f - 12.0f;
+            e.globals.swing = 0.5f + rng.nextFloat() * 0.25f;
+            e.globals.humanize = rng.nextFloat();
+            e.globals.pressure = rng.nextBool();
+        }
+
+        juce::MidiBuffer midi;
+        const int events = rng.nextInt (4);
+        for (int k = 0; k < events; ++k)
+        {
+            const int t = n > 0 ? (rng.nextInt (3) == 0 ? 0 : rng.nextInt (n)) : 0;   // muchas en la muestra 0
+            const int note = kNote + rng.nextInt (eng::kNumPads);
+            switch (rng.nextInt (4))
+            {
+                case 0:  midi.addEvent (juce::MidiMessage::noteOn (1, note, rng.nextFloat()), t); break;
+                case 1:  midi.addEvent (juce::MidiMessage::noteOff (1, note), t); break;
+                case 2:  midi.addEvent (juce::MidiMessage::channelPressureChange (1, rng.nextInt (128)), t); break;
+                default: midi.addEvent (juce::MidiMessage::aftertouchChange (1, note, rng.nextInt (128)), t); break;
+            }
+        }
+
+        e.process (buf, midi, tr);
+        for (int c = 0; c < buf.getNumChannels() && finite; ++c)
+            for (int i = 0; i < n; ++i)
+                if (! std::isfinite (buf.getSample (c, i))) { finite = false; break; }
+
+        // el DAW informa la posicion siguiente con un redondeo al azar
+        tr.ppq += (tr.playing ? n * tr.bpm / 60.0 / kRate : 0.0) + (rng.nextDouble() - 0.5) * 2.0e-9;
+    }
+    CHECK (finite, "aparecio un valor no numerico en la salida");
+}
+
 int main()
 {
     testSampleAccurate();
@@ -301,6 +460,10 @@ int main()
     testPressure();
     testLoopJump();
     testResampleAndManyHits();
+    testEventAtBlockStartWithLateRoll();
+    testDefaultIsOneShot();
+    testGridHitAtBlockEnd();
+    testStress();
     std::printf (failures == 0 ? "OK: todo paso\n" : "%d falla(s)\n", failures);
     return failures == 0 ? 0 : 1;
 }

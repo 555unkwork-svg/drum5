@@ -97,27 +97,36 @@ static void runTests (const juce::String& screenshot)
         onMessageThread ([&] { error = p.takeLoadError(); });
         CHECK (error.isNotEmpty(), "un archivo que no es audio tiene que avisar");
 
-        // retrigger apagado por parametro: una sola vez en 2 segundos de nota mantenida
-        if (auto* param = p.apvts.getParameter (DrumProcessor::padParamId (2, "rtg")))
-            param->setValueNotifyingHost (0.0f);
-        int hits = 0;
-        float prev = 0.0f;
-        for (int block = 0; block < 172; ++block)
+        // por defecto el retrigger viene apagado: una sola vez; encendido: roll
+        auto countHits = [&p]
         {
-            juce::AudioBuffer<float> out (2, 512);
-            juce::MidiBuffer midi;
-            if (block == 0)
-                midi.addEvent (juce::MidiMessage::noteOn (1, 62, 1.0f), 0);
-            p.processBlock (out, midi);
-            for (int i = 0; i < 512; ++i)
+            int hits = 0;
+            float prev = 0.0f;
+            for (int block = 0; block < 172; ++block)   // 2 segundos
             {
-                const float v = std::abs (out.getSample (0, i));
-                if (v > 1.0e-4f && prev <= 1.0e-4f)
-                    ++hits;
-                prev = v;
+                juce::AudioBuffer<float> out (2, 512);
+                juce::MidiBuffer midi;
+                if (block == 0)
+                    midi.addEvent (juce::MidiMessage::noteOn (1, 62, 1.0f), 0);
+                if (block == 171)
+                    midi.addEvent (juce::MidiMessage::noteOff (1, 62), 511);
+                p.processBlock (out, midi);
+                for (int i = 0; i < 512; ++i)
+                {
+                    const float v = std::abs (out.getSample (0, i));
+                    if (v > 1.0e-4f && prev <= 1.0e-4f)
+                        ++hits;
+                    prev = v;
+                }
             }
-        }
-        CHECK (hits == 1, "con RETRIGGER apagado tiene que sonar una vez, sono %d", hits);
+            return hits;
+        };
+        const int hits = countHits();
+        if (auto* param = p.apvts.getParameter (DrumProcessor::padParamId (2, "rtg")))
+            param->setValueNotifyingHost (1.0f);
+        const int rollHits = countHits();
+        CHECK (rollHits > 4, "con RETRIGGER encendido tiene que haber roll, sono %d veces", rollHits);
+        CHECK (hits == 1, "por defecto (RETRIGGER apagado) tiene que sonar una vez, sono %d", hits);
     }
 
     snare.moveFileTo (dir.getChildFile ("movido.wav"));   // simula un sample que se movio de lugar

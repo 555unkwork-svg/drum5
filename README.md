@@ -3,7 +3,7 @@
 Bateria de 16 pads con retrigger al estilo del Note Repeat de la MPC2000XL. Plugin VST3 para Windows y Linux.
 Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 
-## Que hace (v0.2, etapa 2)
+## Que hace (v0.2.1, etapa 2)
 
 ### Pads
 - 16 pads, cada uno con su sample. Se carga con **CARGAR** (en el pad elegido), con clic derecho sobre el pad,
@@ -15,7 +15,7 @@ Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 - El proyecto del DAW guarda la ruta de cada sample. Si un archivo se movio, el pad dice **NO ENCONTRADO**.
 
 ### Roll (como el Note Repeat de la MPC2000XL), ajustes por pad
-- **RETRIGGER**: mantener el pad repite el golpe. El primero suena al instante; los siguientes caen en la grilla
+- **RETRIGGER** (viene apagado): mantener el pad repite el golpe. El primero suena al instante; los siguientes caen en la grilla
   del proyecto (con el proyecto parado, siguen el tempo del proyecto desde el primer golpe).
   Si la grilla cae pegada al primer golpe (menos de 30 % de un paso), ese punto se saltea para no sonar doble.
 - **RATE**: las divisiones de la MPC: 1/8, 1/8T, 1/16, 1/16T, 1/32 y 1/32T.
