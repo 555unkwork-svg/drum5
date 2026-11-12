@@ -5,7 +5,7 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-/** Los 16 pads: clic para tocar (mas arriba suena mas fuerte), clic derecho para el menu,
+/** Los 16 pads: clic para tocar (mas arriba suena mas fuerte; mantener = roll), clic derecho para el menu,
     y se puede soltar un archivo encima de cada uno. */
 class PadGrid final : public juce::Component
 {
@@ -45,13 +45,29 @@ public:
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
 private:
+    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+
+    /** Un fader horizontal con su nombre a la izquierda. */
+    struct Fader
+    {
+        juce::Slider slider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+        juce::Label label;
+        std::unique_ptr<SliderAttachment> attachment;
+    };
+
     void changeListenerCallback (juce::ChangeBroadcaster*) override { refresh(); }
-    void timerCallback() override { pads.repaint(); }
+    void timerCallback() override;
     void refresh();
+    void attachPad (int pad);
+    void setupFader (Fader&, const juce::String& name, const juce::String& suffix);
+    void setupCaption (juce::Label&, const juce::String& text);
+    void layoutFader (Fader&, juce::Rectangle<int> row);
+    void setChoice (const char* name, int index);
     void choosePadFile (int pad);
     void showPadMenu (int pad);
-    /** Carga los archivos en pads seguidos desde `firstPad`. Devuelve cuantos fallaron. */
-    int loadFiles (const juce::StringArray& files, int firstPad);
+    void loadFiles (const juce::StringArray& files, int firstPad);
     int padAtEditorPoint (int x, int y) const;
 
     DrumProcessor& proc;
@@ -62,6 +78,25 @@ private:
     juce::AudioProcessorValueTreeState::SliderAttachment masterAttachment;
     juce::Label status;
     std::unique_ptr<juce::FileChooser> chooser;
+
+    //---- panel del pad elegido
+    int attachedPad = -1;
+    juce::Rectangle<int> panelBounds, globalBounds;
+    juce::Label padTitle;
+    juce::ToggleButton retrigger { "Retrigger" }, latch { "Latch" }, ramp { "Rate Ramp" };
+    std::unique_ptr<ButtonAttachment> retriggerAtt, latchAtt, rampAtt;
+    juce::Label rateCaption, modeCaption;
+    std::array<juce::TextButton, eng::kNumRates> rateButtons;
+    juce::TextButton syncButton { "SYNC" }, freeButton { "LIBRE" };
+    Fader freeHz, gate, accent, pitchVar;
+    juce::ComboBox accentGroup, rampBeats;
+    std::unique_ptr<ComboAttachment> accentGroupAtt, rampBeatsAtt;
+
+    //---- generales
+    juce::Label globalTitle, bpmLabel;
+    Fader swing, humanize;
+    juce::ToggleButton pressure { "Presion" };
+    ButtonAttachment pressureAtt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DrumEditor)
 };

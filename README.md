@@ -3,23 +3,41 @@
 Bateria de 16 pads con retrigger al estilo del Note Repeat de la MPC2000XL. Plugin VST3 para Windows y Linux.
 Hecho con [JUCE 9](https://juce.com), con la misma linea visual que sampler5.
 
-## Que hace (v0.1, etapa 1)
+## Que hace (v0.2, etapa 2)
 
+### Pads
 - 16 pads, cada uno con su sample. Se carga con **CARGAR** (en el pad elegido), con clic derecho sobre el pad,
   o arrastrando archivos encima: varios archivos llenan pads seguidos desde donde se sueltan.
+  La carga es en segundo plano (el pad dice **CARGANDO...**), asi los samples largos no traban la interfaz.
 - Formatos: WAV, AIFF, FLAC, MP3 y OGG (hasta 30 segundos por sample).
-- Los pads se tocan por MIDI desde C5 de FL Studio (nota 60) en adelante, o con el mouse
-  (mas arriba en el pad suena mas fuerte).
+- Se tocan por MIDI desde C5 de FL Studio (nota 60) en adelante, o con el mouse (mas arriba suena mas fuerte).
 - Disposicion de MPC: el pad 1 abajo a la izquierda, el 16 arriba a la derecha.
-- **VACIAR** saca el sample del pad elegido. **MASTER** es el volumen general.
-- El proyecto del DAW guarda la ruta de cada sample. Si un archivo se movio, el pad dice **NO ENCONTRADO**
-  y la ruta se conserva.
+- El proyecto del DAW guarda la ruta de cada sample. Si un archivo se movio, el pad dice **NO ENCONTRADO**.
+
+### Roll (como el Note Repeat de la MPC2000XL), ajustes por pad
+- **RETRIGGER**: mantener el pad repite el golpe. El primero suena al instante; los siguientes caen en la grilla
+  del proyecto (con el proyecto parado, siguen el tempo del proyecto desde el primer golpe).
+  Si la grilla cae pegada al primer golpe (menos de 30 % de un paso), ese punto se saltea para no sonar doble.
+- **RATE**: las divisiones de la MPC: 1/8, 1/8T, 1/16, 1/16T, 1/32 y 1/32T.
+- **MODO**: SYNC (grilla) o LIBRE (golpes por segundo, de 1 a 30 Hz, sin grilla).
+- **LATCH**: el roll sigue al soltar el pad; se corta tocandolo otra vez.
+- **GATE**: largo de cada golpe respecto del intervalo (100 % = suena entero).
+- **ACCENT**: el primer golpe de cada grupo de 2, 3 o 4 suena normal y el resto mas suave segun el %.
+- **RATE RAMP**: despues de 1, 2 o 4 tiempos pasa a la division siguiente (1/16 a 1/32, 1/8T a 1/16T...).
+  En 1/32 y 1/32T no hay division mas rapida. En LIBRE duplica la velocidad.
+- **PITCH VAR**: cada golpe sube (o baja) de a poco hasta los semitonos elegidos, a los que llega en 1 compas.
+
+### General
+- **SWING** de 50 a 75 %, como en la MPC: solo en 1/8 y 1/16, atrasa los pasos pares.
+- **HUMANIZE**: pequenas variaciones de fuerza y de tiempo (siempre un poco tarde, hasta 8 ms) en las repeticiones.
+- **PRESION**: apagado, todas las repeticiones suenan con la fuerza del primer golpe. Encendido, la presion del pad
+  (aftertouch de canal o polifonico) manda la fuerza de las repeticiones, como en la MPC.
+- **MASTER**: volumen general.
 
 ## Plan
 
-1. Base: 16 pads que suenan, compilacion automatica (esta version).
-2. Motor de retrigger: roll a tempo con divisiones y swing de la MPC, LATCH, PRESION, Gate, Accent, Rate Ramp,
-   Pitch Var, Humanize y modo LIBRE.
+1. Base: 16 pads que suenan, compilacion automatica. (hecho)
+2. Motor de retrigger. (esta version)
 3. Sampler completo por pad, choke, MIDI Learn, rango y canal MIDI, multi-out.
 4. Browser de samples con deteccion de tipo por nombre y carpeta, categorias propias y exportar kit (carpeta o zip).
 5. Presets y pulido visual.

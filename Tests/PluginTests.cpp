@@ -4,11 +4,33 @@
 #include "PluginProcessor.h"
 
 #include <cstdio>
+#include <thread>
 
 static int failures = 0;
 
 #define CHECK(cond, ...) \
     do { if (! (cond)) { ++failures; std::printf ("  FALLA: "); std::printf (__VA_ARGS__); std::printf ("\n"); } } while (false)
+
+template <typename Fn>
+static void onMessageThread (Fn&& fn)
+{
+    juce::WaitableEvent done;
+    juce::MessageManager::callAsync ([&] { fn(); done.signal(); });
+    done.wait();
+}
+
+/** Espera (hasta 2 s) a que termine la carga en segundo plano del pad. */
+static void waitLoaded (DrumProcessor& p, int pad)
+{
+    for (int i = 0; i < 200; ++i)
+    {
+        bool loading = true;
+        onMessageThread ([&] { loading = p.isPadLoading (pad); });
+        if (! loading)
+            return;
+        juce::Thread::sleep (10);
+    }
+}
 
 static juce::File writeWav (const juce::File& dir, const juce::String& name, int length)
 {
@@ -27,9 +49,8 @@ static juce::File writeWav (const juce::File& dir, const juce::String& name, int
     return file;
 }
 
-int main (int argc, char** argv)
+static void runTests (const juce::String& screenshot)
 {
-    juce::ScopedJuceInitialiser_GUI init;
     const auto dir = juce::File::createTempFile ("drum5-tests");
     dir.createDirectory();
 
@@ -60,6 +81,45 @@ int main (int argc, char** argv)
         CHECK (out.getMagnitude (0, 10, 100) > 0.1f, "el snare no suena con la nota 40");
     }
 
+    std::printf ("Los ajustes del pad llegan al motor y la carga en segundo plano funciona\n");
+    {
+        DrumProcessor p;
+        p.prepareToPlay (44100.0, 512);
+        bool loadingNow = false;
+        onMessageThread ([&] { p.loadSampleAsync (2, kick); loadingNow = p.isPadLoading (2); });
+        CHECK (loadingNow, "el pad tiene que figurar CARGANDO");
+        waitLoaded (p, 2);
+        CHECK (p.getPadFile (2) == kick, "la carga en segundo plano no termino");
+
+        onMessageThread ([&] { p.loadSampleAsync (3, bad); });
+        waitLoaded (p, 3);
+        juce::String error;
+        onMessageThread ([&] { error = p.takeLoadError(); });
+        CHECK (error.isNotEmpty(), "un archivo que no es audio tiene que avisar");
+
+        // retrigger apagado por parametro: una sola vez en 2 segundos de nota mantenida
+        if (auto* param = p.apvts.getParameter (DrumProcessor::padParamId (2, "rtg")))
+            param->setValueNotifyingHost (0.0f);
+        int hits = 0;
+        float prev = 0.0f;
+        for (int block = 0; block < 172; ++block)
+        {
+            juce::AudioBuffer<float> out (2, 512);
+            juce::MidiBuffer midi;
+            if (block == 0)
+                midi.addEvent (juce::MidiMessage::noteOn (1, 62, 1.0f), 0);
+            p.processBlock (out, midi);
+            for (int i = 0; i < 512; ++i)
+            {
+                const float v = std::abs (out.getSample (0, i));
+                if (v > 1.0e-4f && prev <= 1.0e-4f)
+                    ++hits;
+                prev = v;
+            }
+        }
+        CHECK (hits == 1, "con RETRIGGER apagado tiene que sonar una vez, sono %d", hits);
+    }
+
     snare.moveFileTo (dir.getChildFile ("movido.wav"));   // simula un sample que se movio de lugar
     {
         DrumProcessor p;
@@ -80,20 +140,37 @@ int main (int argc, char** argv)
     }
 
     // captura de la interfaz con dos pads cargados (para revisarla sin abrir un DAW)
-    if (argc > 1)
-    {
-        DrumProcessor p;
-        p.loadSample (0, kick);
-        p.loadSample (13, dir.getChildFile ("movido.wav"));
-        std::unique_ptr<juce::AudioProcessorEditor> editor (p.createEditor());
-        const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 2.0f);
-        juce::File (juce::String (argv[1])).deleteFile();
-        juce::FileOutputStream out { juce::File (juce::String (argv[1])) };
-        juce::PNGImageFormat().writeImageToStream (image, out);
-        CHECK (out.getStatus().wasOk(), "no se pudo guardar la captura");
-    }
+    if (screenshot.isNotEmpty())
+        onMessageThread ([&]
+        {
+            DrumProcessor p;
+            p.loadSample (0, kick);
+            p.loadSample (13, dir.getChildFile ("movido.wav"));
+            std::unique_ptr<juce::AudioProcessorEditor> editor (p.createEditor());
+            const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 2.0f);
+            juce::File (screenshot).deleteFile();
+            juce::FileOutputStream out { juce::File (screenshot) };
+            juce::PNGImageFormat().writeImageToStream (image, out);
+            CHECK (out.getStatus().wasOk(), "no se pudo guardar la captura");
+        });
 
     dir.deleteRecursively();
+}
+
+int main (int argc, char** argv)
+{
+    juce::ScopedJuceInitialiser_GUI init;
+    const juce::String screenshot = argc > 1 ? juce::String (argv[1]) : juce::String();
+
+    // las pruebas corren en otro hilo; este atiende los mensajes (cargas en segundo plano, interfaz)
+    std::thread worker ([&]
+    {
+        runTests (screenshot);
+        juce::MessageManager::getInstance()->stopDispatchLoop();
+    });
+    juce::MessageManager::getInstance()->runDispatchLoop();
+    worker.join();
+
     std::printf (failures == 0 ? "OK: todo paso\n" : "%d falla(s)\n", failures);
     return failures == 0 ? 0 : 1;
 }

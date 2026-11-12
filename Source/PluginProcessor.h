@@ -46,6 +46,11 @@ public:
     //---- pads (hilo de mensajes) ----
     /** Carga un archivo en un pad. Devuelve false (y deja el pad como estaba) si no se pudo leer. */
     bool loadSample (int pad, const juce::File& file);
+    /** Igual, pero lee el archivo en otro hilo para no trabar la interfaz. */
+    void loadSampleAsync (int pad, const juce::File& file);
+    bool isPadLoading (int pad) const { return loading[(size_t) pad] > 0; }
+    /** Mensaje de la ultima carga fallida (y lo borra); vacio si no hubo. */
+    juce::String takeLoadError() { return std::exchange (loadError, {}); }
     void clearPad (int pad);
     juce::File getPadFile (int pad) const { return padFiles[(size_t) pad]; }
     /** true si el pad tiene una ruta guardada pero el archivo no esta (se movio o se borro). */
@@ -55,6 +60,12 @@ public:
     int getSelectedPad() const { return selectedPad; }
     void setSelectedPad (int pad);
 
+    /** Tempo que informa el proyecto (120 si no informa). */
+    double getHostBpm() const { return hostBpm.load(); }
+
+    static juce::String padParamId (int pad, const char* name);
+    static const juce::StringArray& rateNames();
+
     juce::AudioFormatManager formats;
     juce::AudioProcessorValueTreeState apvts;
     eng::DrumEngine engine;
@@ -62,6 +73,22 @@ public:
 private:
     void timerCallback() override { engine.purgeRetired(); }
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    eng::SamplePtr readSample (const juce::File& file);
+    void applySample (int pad, const juce::File& file, eng::SamplePtr sample);
+    void readSettings();
+
+    struct PadParams
+    {
+        std::atomic<float>* p[11] {};
+    };
+    std::array<PadParams, eng::kNumPads> padParams;
+    std::atomic<float> *swingParam = nullptr, *humanizeParam = nullptr, *pressureParam = nullptr, *masterParam = nullptr;
+
+    std::atomic<double> hostBpm { 120.0 };
+    std::array<int, eng::kNumPads> loading {};
+    juce::String loadError;
+    std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
+    juce::ThreadPool loader { juce::ThreadPoolOptions().withNumberOfThreads (1).withThreadName ("drum5 carga") };
 
     std::array<juce::File, eng::kNumPads> padFiles;
     std::array<bool, eng::kNumPads> missing {};
